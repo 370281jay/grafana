@@ -65,8 +65,8 @@ export class Branding {
   static LoginBackground = LoginBackground;
   static MenuLogo = MenuLogo;
   static LoginBoxBackground = LoginBoxBackground;
-  static AppTitle = 'Grafana';
-  static LoginTitle = 'Welcome to Grafana';
+  static AppTitle = '惠康数据可视化平台';
+  static LoginTitle = 'Welcome to 惠康';
   static HideEdition = false;
   static GetLoginSubTitle = (): null | string => {
     return null;

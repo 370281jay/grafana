@@ -2,10 +2,13 @@ import { useEffect } from 'react';
 import { Navigate, useLocation, useParams } from 'react-router-dom-v5-compat';
 
 import { isTruthy } from '@grafana/data';
+
 import { NavLandingPage } from 'app/core/components/NavLandingPage/NavLandingPage';
 import { PageNotFound } from 'app/core/components/PageNotFound/PageNotFound';
+import { SafeDynamicImport } from 'app/core/components/DynamicImports/SafeDynamicImport';
 import config from 'app/core/config';
 import { contextSrv } from 'app/core/services/context_srv';
+import { RouteDescriptor } from 'app/core/navigation/types';
 import LdapPage from 'app/features/admin/ldap/LdapPage';
 import { getAlertingRoutes } from 'app/features/alerting/routes';
 import { isAdmin, isLocalDevEnv, isOpenSourceEdition } from 'app/features/alerting/unified/utils/misc';
@@ -14,17 +17,15 @@ import { ROUTES as CONNECTIONS_ROUTES } from 'app/features/connections/constants
 import { getRoutes as getDataConnectionsRoutes } from 'app/features/connections/routes';
 import { DASHBOARD_LIBRARY_ROUTES } from 'app/features/dashboard/dashgrid/types';
 import { DATASOURCES_ROUTES } from 'app/features/datasources/constants';
+import { getPublicDashboardRoutes } from 'app/features/dashboard/routes';
 import { ConfigureIRM } from 'app/features/gops/configuration-tracker/components/ConfigureIRM';
+import { HomePage } from 'app/features/home/HomePage';
 import { getRoutes as getPluginCatalogRoutes } from 'app/features/plugins/admin/routes';
 import { getAppPluginRoutes } from 'app/features/plugins/routes';
 import { getProfileRoutes } from 'app/features/profile/routes';
+import { getProvisioningRoutes } from 'app/features/provisioning/utils/routes';
 import { AccessControlAction } from 'app/types/accessControl';
 import { DashboardRoutes } from 'app/types/dashboard';
-
-import { SafeDynamicImport } from '../core/components/DynamicImports/SafeDynamicImport';
-import { RouteDescriptor } from '../core/navigation/types';
-import { getPublicDashboardRoutes } from '../features/dashboard/routes';
-import { getProvisioningRoutes } from '../features/provisioning/utils/routes';
 
 const isDevEnv = config.buildInfo.env === 'development';
 export const extraRoutes: RouteDescriptor[] = [];
@@ -34,13 +35,19 @@ export function getAppRoutes(): RouteDescriptor[] {
     // Based on the Grafana configuration standalone plugin pages can even override and extend existing core pages, or they can register new routes under existing ones.
     // In order to make it possible we need to register them first due to how `<Switch>` is evaluating routes. (This will be unnecessary once/when we upgrade to React Router v6 and start using `<Routes>` instead.)
     ...getAppPluginRoutes(),
+    // {
+    //   path: '/',
+    //   pageClass: 'page-dashboard',
+    //   routeName: DashboardRoutes.Home,
+    //   component: SafeDynamicImport(
+    //     () => import(/* webpackChunkName: "DashboardPageProxy" */ '../features/dashboard/containers/DashboardPageProxy')
+    //   ),
+    // },
     {
       path: '/',
-      pageClass: 'page-dashboard',
+      pageClass: 'page-home',
       routeName: DashboardRoutes.Home,
-      component: SafeDynamicImport(
-        () => import(/* webpackChunkName: "DashboardPageProxy" */ '../features/dashboard/containers/DashboardPageProxy')
-      ),
+      component: HomePage,
     },
     {
       path: '/d/:uid/:slug?',
@@ -143,7 +150,7 @@ export function getAppRoutes(): RouteDescriptor[] {
           ? import(/* webpackChunkName: "CorrelationsPage" */ 'app/features/correlations/CorrelationsPage')
           : import(
               /* webpackChunkName: "CorrelationsFeatureToggle" */ 'app/features/correlations/CorrelationsFeatureToggle'
-            )
+          )
       ),
     },
     {
@@ -233,9 +240,9 @@ export function getAppRoutes(): RouteDescriptor[] {
       component:
         isDevEnv || config.featureToggles.enableExtensionsAdminPage
           ? SafeDynamicImport(
-              () =>
-                import(/* webpackChunkName: "PluginExtensionsLog" */ 'app/features/plugins/extensions/logs/LogViewer')
-            )
+            () =>
+              import(/* webpackChunkName: "PluginExtensionsLog" */ 'app/features/plugins/extensions/logs/LogViewer')
+          )
           : () => <Navigate replace to="/admin" />,
     },
     {
@@ -323,8 +330,8 @@ export function getAppRoutes(): RouteDescriptor[] {
       path: '/admin/authentication/ldap',
       component: config.featureToggles.ssoSettingsLDAP
         ? SafeDynamicImport(
-            () => import(/* webpackChunkName: "LdapSettingsPage" */ 'app/features/admin/ldap/LdapSettingsPage')
-          )
+          () => import(/* webpackChunkName: "LdapSettingsPage" */ 'app/features/admin/ldap/LdapSettingsPage')
+        )
         : LdapPage,
     },
     {
@@ -409,8 +416,8 @@ export function getAppRoutes(): RouteDescriptor[] {
       component: !config.verifyEmailEnabled
         ? () => <Navigate replace to="/signup" />
         : SafeDynamicImport(
-            () => import(/* webpackChunkName "VerifyEmailPage"*/ 'app/core/components/Signup/VerifyEmailPage')
-          ),
+          () => import(/* webpackChunkName "VerifyEmailPage"*/ 'app/core/components/Signup/VerifyEmailPage')
+        ),
       pageClass: 'login-page',
       chromeless: true,
     },
