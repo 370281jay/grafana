@@ -77,6 +77,10 @@ func (hs *HTTPServer) registerRoutes() {
 
 	r := hs.RouteRegister
 
+	// InfluxDB 代理路由 - 需要登录认证
+    // 替换为：
+	r.Post("/api/influxdb/query", reqSignedIn, routing.Wrap(hs.InfluxDBQuery))
+
 	// not logged in views
 	r.Get("/logout", hs.Logout)
 	r.Post("/login", requestmeta.SetOwner(requestmeta.TeamAuth), quota(string(auth.QuotaTargetSrv)), routing.Wrap(hs.LoginPost))
