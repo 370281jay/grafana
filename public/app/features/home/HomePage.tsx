@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 
 import { Box } from '@grafana/ui';
@@ -24,6 +24,12 @@ interface DeviceVitals extends DeviceMetrics {
   occupied: boolean;
   fallRisk: boolean;
 }
+
+type DashboardSummary = {
+  uid: string;
+  title: string;
+  url: string;
+};
 
 const MONITORED_DEVICES: DeviceConfig[] = [
   { room: '1', deviceId: '84F7035346E0' },
@@ -128,60 +134,116 @@ export function HomePage() {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
-  const fetchVitals = async () => {
-    setLoading(true);
-    setError(null);
+  const dashboardUrlByDevice = useMemo(() => {
+    const map = new Map<string, string>();
+    MONITORED_DEVICES.forEach((config, index) => {
+      const summary = dashboards[index];
+      if (summary?.url) {
+        map.set(config.deviceId, summary.url);
+      }
+    });
+    return map;
+  }, [dashboards]);
 
+  const sortedDeviceVitals = useMemo(() => {
+    return [...deviceVitals].sort((a, b) => Number(b.fallRisk) - Number(a.fallRisk));
+  }, [deviceVitals]);
+
+  const fetchDashboards = async () => {
     try {
-      console.info('开始执行 HomePage.fetchVitals()');
-
-      const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, MONITORED_DEVICES);
-      console.info('Flux 查询语句:', fluxQuery);
-
-      const response = await getBackendSrv().post('/api/influxdb/query', {
-        query: fluxQuery,
+      const searchResult = await getBackendSrv().get('/api/search', {
+        type: 'dash-db',
+        query: '*',
+        limit: MONITORED_DEVICES.length,
       });
 
-      console.info('InfluxDB 响应:', response);
+      const items = Array.isArray(searchResult)
+        ? searchResult
+            .filter((item: any) => item?.type === 'dash-db' && typeof item?.url === 'string')
+            .map((item: any) => ({
+              uid: String(item.uid ?? ''),
+              title: String(item.title ?? ''),
+              url: String(item.url ?? ''),
+            }))
+        : [];
 
-      const groupedMetrics = extractDeviceMetrics(response);
-
-      const updatedVitals = MONITORED_DEVICES.map((config) => {
-        const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
-        const occupied = Object.values(metrics).some((value) => value !== null);
-        const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
-
-        return {
-          deviceId: config.deviceId,
-          room: config.room,
-          heartRate: metrics.heartRate,
-          respirationRate: metrics.respirationRate,
-          distanceMin: metrics.distanceMin,
-          movementAmplitude: metrics.movementAmplitude,
-          occupied,
-          fallRisk,
-        };
-      });
-
-      setDeviceVitals(updatedVitals);
-      setLastUpdated(new Date().toLocaleTimeString());
+      setDashboards(items);
     } catch (err) {
-      console.error('获取健康数据失败:', err);
-      setError(`获取数据失败: ${err instanceof Error ? err.message : '未知错误'}`);
-    } finally {
-      setLoading(false);
+      console.error('获取仪表板列表失败:', err);
     }
   };
 
+  const fetchVitals = useCallback(
+    async (options?: { showIndicator?: boolean }) => {
+      const shouldShowIndicator = options?.showIndicator ?? !hasLoadedOnce;
+      if (shouldShowIndicator) {
+        setLoading(true);
+      }
+      setError(null);
+
+      try {
+        console.info('开始执行 HomePage.fetchVitals()');
+
+        const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, MONITORED_DEVICES);
+        console.info('Flux 查询语句:', fluxQuery);
+
+        const response = await getBackendSrv().post('/api/influxdb/query', {
+          query: fluxQuery,
+        });
+
+        console.info('InfluxDB 响应:', response);
+
+        const groupedMetrics = extractDeviceMetrics(response);
+
+        const updatedVitals = MONITORED_DEVICES.map((config) => {
+          const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
+          const occupied = Object.values(metrics).some((value) => value !== null);
+          const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
+
+          return {
+            deviceId: config.deviceId,
+            room: config.room,
+            heartRate: metrics.heartRate,
+            respirationRate: metrics.respirationRate,
+            distanceMin: metrics.distanceMin,
+            movementAmplitude: metrics.movementAmplitude,
+            occupied,
+            fallRisk,
+          };
+        });
+
+        setDeviceVitals(updatedVitals);
+        setLastUpdated(new Date().toLocaleTimeString());
+        setHasLoadedOnce(true);
+      } catch (err) {
+        console.error('获取健康数据失败:', err);
+        setError(`获取数据失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      } finally {
+        if (shouldShowIndicator) {
+          setLoading(false);
+        }
+      }
+    },
+    [hasLoadedOnce]
+  );
+
   useEffect(() => {
-    fetchVitals();
-    const interval = setInterval(fetchVitals, 150000);
-    return () => clearInterval(interval);
+    fetchDashboards();
   }, []);
 
+  useEffect(() => {
+    fetchVitals({ showIndicator: true });
+    const interval = setInterval(() => {
+      fetchVitals();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [fetchVitals]);
+
   const handleManualRefresh = () => {
-    fetchVitals();
+    fetchVitals({ showIndicator: true });
   };
 
   const renderMetric = (
@@ -203,7 +265,13 @@ export function HomePage() {
         {label}
       </span>
       <span style={{ fontSize: '24px', fontWeight: 600, marginBottom: '4px' }}>
-        {loading ? '-' : formatMetric(value, fractionDigits)}
+        {(() => {
+          const hasValue = value !== null && !Number.isNaN(value);
+          if (!hasLoadedOnce && loading && !hasValue) {
+            return '-';
+          }
+          return hasValue ? formatMetric(value, fractionDigits) : '-';
+        })()}
       </span>
       <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
     </div>
@@ -282,14 +350,26 @@ export function HomePage() {
             marginBottom: '24px',
           }}
         >
-          {deviceVitals.map((device) => {
-            const fallRiskHighlight = device.fallRisk
-              ? 'rgba(220, 53, 69, 0.1)'
-              : 'rgba(0, 0, 0, 0.02)';
+          {sortedDeviceVitals.map((device) => {
+             const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
+             const fallRiskHighlight = device.fallRisk
+               ? 'rgba(220, 53, 69, 0.1)'
+               : 'rgba(0, 0, 0, 0.02)';
+            const hasAnyMetric =
+              device.heartRate !== null ||
+              device.respirationRate !== null ||
+              device.distanceMin !== null ||
+              device.movementAmplitude !== null;
+            const showPlaceholder = !hasLoadedOnce && loading && !hasAnyMetric;
 
             return (
               <div
                 key={device.deviceId}
+                onClick={() => {
+                  if (dashboardLink) {
+                    window.location.assign(dashboardLink);
+                  }
+                }}
                 style={{
                   padding: '12px',
                   backgroundColor: fallRiskHighlight,
@@ -300,6 +380,7 @@ export function HomePage() {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '10px',
+                  cursor: dashboardLink ? 'pointer' : 'default',
                 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -309,6 +390,11 @@ export function HomePage() {
                   <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
                     设备 ID: {device.deviceId}
                   </span>
+                  {dashboardLink && (
+                    <span style={{ fontSize: '12px', color: '#0066cc' }}>
+                      点击进入仪表板
+                    </span>
+                  )}
                 </div>
                 <div
                   style={{
@@ -331,7 +417,7 @@ export function HomePage() {
                       有人状态
                     </span>
                     <span style={{ fontSize: '16px', fontWeight: 600 }}>
-                      {loading ? '-' : device.occupied ? '有人' : '无人'}
+                      {showPlaceholder ? '-' : device.occupied ? '有人' : '无人'}
                     </span>
                   </div>
                   <div
@@ -356,7 +442,7 @@ export function HomePage() {
                         color: device.fallRisk ? '#d63342' : 'inherit',
                       }}
                     >
-                      {loading ? '-' : device.fallRisk ? '有风险' : '无风险'}
+                      {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
                     </span>
                   </div>
                 </div>
@@ -369,7 +455,7 @@ export function HomePage() {
                 >
                   {renderMetric('心率', device.heartRate, 'bpm')}
                   {renderMetric('呼吸率', device.respirationRate, 'rpm')}
-                  {renderMetric('最小距离', device.distanceMin, 'cm', 1)}
+                  {renderMetric('距离', device.distanceMin, 'cm', 1)}
                   {renderMetric('体动值', device.movementAmplitude, '', 1)}
                 </div>
               </div>
