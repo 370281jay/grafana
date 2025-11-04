@@ -5,77 +5,130 @@ import { Box } from '@grafana/ui';
 
 import { Page } from 'app/core/components/Page/Page';
 
-interface VitalsData {
+interface DeviceConfig {
+  room: string;
+  deviceId: string;
+  label?: string;
+}
+
+type DeviceMetrics = {
   heartRate: number | null;
   respirationRate: number | null;
   distanceMin: number | null;
   movementAmplitude: number | null;
+};
+
+interface DeviceVitals extends DeviceMetrics {
+  deviceId: string;
+  room: string;
+  occupied: boolean;
+  fallRisk: boolean;
 }
 
-// InfluxDB 硬编码配置
+const MONITORED_DEVICES: DeviceConfig[] = [
+  { room: '1', deviceId: '84F7035346E0' },
+  { room: '2', deviceId: '10B41DC081B0'}
+  // 在此添加更多设备配置
+];
+
 const INFLUXDB_CONFIG = {
   url: 'http://influx.lanhc.com',
   token: 'XXYxzLQLaaQ5UK6BsNky_sczBubMaL6oZhpifvWUyTbj7sKvkKhruuplOWXmNXHyrz-hExSEo9kcu0pN7yJVag==',
   org: 'ld6002h',
   bucket: 'vitals_data',
-  deviceId: '84F7035346E0',
+};
+
+const buildDeviceFilter = (devices: DeviceConfig[]): string => {
+  if (!devices.length) {
+    return 'true';
+  }
+  return devices.map((device) => `r["device_id"] == "${device.deviceId}"`).join(' or ');
+};
+
+const formatMetric = (value: number | null, fractionDigits = 0): string => {
+  if (value === null || Number.isNaN(value)) {
+    return '-';
+  }
+  return value.toFixed(fractionDigits);
 };
 
 // 仿照 Python 脚本中的 Flux 查询语句
-const buildFluxQuery = (bucket: string, deviceId: string): string => {
+const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
+  const deviceFilter = buildDeviceFilter(devices);
   return `from(bucket: "${bucket}")
   |> range(start: -5m)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
   |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
+  |> filter(fn: (r) => ${deviceFilter})
   |> last()`;
 };
 
-// 仿照 Python 的 _query_single_value 逻辑
-const querySingleValue = (response: any): Map<string, number | null> => {
-  const result = new Map<string, number | null>();
-  result.set('heartRate', null);
-  result.set('respirationRate', null);
-  result.set('distanceMin', null);
-  result.set('movementAmplitude', null);
+const extractDeviceMetrics = (response: any): Map<string, DeviceMetrics> => {
+  const grouped = new Map<string, DeviceMetrics>();
+  const records = Array.isArray(response?.results) ? response.results : [];
 
-  try {
-    if (response.results) {
-      response.results.forEach((result: any) => {
-        result.series?.forEach((series: any) => {
-          const field = series.tags?._field;
-          const value = series.values?.[0]?.[1];
+  records.forEach((row: any) => {
+    const deviceId = String(row?.device_id ?? '').trim();
+    const field = String(row?._field ?? '').trim();
+    const rawValue = row?._value;
 
-          if (field === 'heart_rate_bpm' && value !== null && value !== undefined) {
-            result.set('heartRate', parseFloat(value));
-          } else if (field === 'respiration_bpm' && value !== null && value !== undefined) {
-            result.set('respirationRate', parseFloat(value));
-          } else if (field === 'distance_min_cm' && value !== null && value !== undefined) {
-            result.set('distanceMin', parseFloat(value));
-          } else if (field === 'movement_amplitude' && value !== null && value !== undefined) {
-            result.set('movementAmplitude', parseFloat(value));
-          }
-        });
-      });
+    if (!deviceId || !field || rawValue === undefined || rawValue === null) {
+      return;
     }
-  } catch (error) {
-    console.error('查询单值失败:', error);
-  }
 
-  return result;
+    const numericValue = parseFloat(String(rawValue));
+    if (Number.isNaN(numericValue)) {
+      return;
+    }
+
+    const metrics = grouped.get(deviceId) ?? createEmptyMetrics();
+
+    switch (field) {
+      case 'heart_rate_bpm':
+        metrics.heartRate = numericValue;
+        break;
+      case 'respiration_bpm':
+        metrics.respirationRate = numericValue;
+        break;
+      case 'distance_min_cm':
+        metrics.distanceMin = numericValue;
+        break;
+      case 'movement_amplitude':
+        metrics.movementAmplitude = numericValue;
+        break;
+      default:
+        break;
+    }
+
+    grouped.set(deviceId, metrics);
+  });
+
+  return grouped;
 };
 
+const createEmptyMetrics = (): DeviceMetrics => ({
+  heartRate: null,
+  respirationRate: null,
+  distanceMin: null,
+  movementAmplitude: null,
+});
+
+const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
+  deviceId: config.deviceId,
+  room: config.room,
+  ...createEmptyMetrics(),
+  occupied: false,
+  fallRisk: false,
+});
+
 export function HomePage() {
-  const [vitals, setVitals] = useState<VitalsData>({
-    heartRate: null,
-    respirationRate: null,
-    distanceMin: null,
-    movementAmplitude: null,
-  });
+  const [deviceVitals, setDeviceVitals] = useState<DeviceVitals[]>(
+    MONITORED_DEVICES.map((config) => buildEmptyDeviceVitals(config))
+  );
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  // 直接调用 InfluxDB API
   const fetchVitals = async () => {
     setLoading(true);
     setError(null);
@@ -83,49 +136,78 @@ export function HomePage() {
     try {
       console.info('开始执行 HomePage.fetchVitals()');
 
-      const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, INFLUXDB_CONFIG.deviceId);
+      const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, MONITORED_DEVICES);
       console.info('Flux 查询语句:', fluxQuery);
 
-      // 调用后端代理接口
       const response = await getBackendSrv().post('/api/influxdb/query', {
         query: fluxQuery,
       });
 
       console.info('InfluxDB 响应:', response);
 
-      // 仿照 Python 的数据解析逻辑
-      const queryResult = querySingleValue(response);
-      const vitalsData: VitalsData = {
-        heartRate: queryResult.get('heartRate') ?? null,
-        respirationRate: queryResult.get('respirationRate') ?? null,
-        distanceMin: queryResult.get('distanceMin') ?? null,
-        movementAmplitude: queryResult.get('movementAmplitude') ?? null,
-      };
+      const groupedMetrics = extractDeviceMetrics(response);
 
-      console.info('查询结果:', vitalsData);
+      const updatedVitals = MONITORED_DEVICES.map((config) => {
+        const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
+        const occupied = Object.values(metrics).some((value) => value !== null);
+        const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
 
-      setVitals(vitalsData);
+        return {
+          deviceId: config.deviceId,
+          room: config.room,
+          heartRate: metrics.heartRate,
+          respirationRate: metrics.respirationRate,
+          distanceMin: metrics.distanceMin,
+          movementAmplitude: metrics.movementAmplitude,
+          occupied,
+          fallRisk,
+        };
+      });
+
+      setDeviceVitals(updatedVitals);
       setLastUpdated(new Date().toLocaleTimeString());
-    } catch (error) {
-      console.error('获取健康数据失败:', error);
-      setError(`获取数据失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } catch (err) {
+      console.error('获取健康数据失败:', err);
+      setError(`获取数据失败: ${err instanceof Error ? err.message : '未知错误'}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // 页面挂载时自动查询，之后每 30 秒刷新一次
   useEffect(() => {
     fetchVitals();
-    const interval = setInterval(fetchVitals, 30000);
-
+    const interval = setInterval(fetchVitals, 150000);
     return () => clearInterval(interval);
   }, []);
 
-  // 手动刷新按钮处理
   const handleManualRefresh = () => {
     fetchVitals();
   };
+
+  const renderMetric = (
+    label: string,
+    value: number | null,
+    unit: string,
+    fractionDigits = 0
+  ) => (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '8px 12px',
+        backgroundColor: 'rgba(0, 0, 0, 0.02)',
+        borderRadius: '4px',
+      }}
+    >
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '4px' }}>
+        {label}
+      </span>
+      <span style={{ fontSize: '24px', fontWeight: 600, marginBottom: '4px' }}>
+        {loading ? '-' : formatMetric(value, fractionDigits)}
+      </span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
+    </div>
+  );
 
   return (
     <Page navId="home">
@@ -133,9 +215,7 @@ export function HomePage() {
         <h1 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}>
           欢迎来到惠康数据可视化平台
         </h1>
-        <p style={{ fontSize: '18px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '48px', textAlign: 'center' }}>
-          强大的数据可视化和监控解决方案
-        </p>
+       
 
         {/* 错误提示 */}
         {error && (
@@ -195,88 +275,106 @@ export function HomePage() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-            gap: '16px',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: '12px',
             width: '100%',
             maxWidth: '1200px',
-            marginBottom: '32px',
+            marginBottom: '24px',
           }}
         >
-          <div
-            style={{
-              padding: '16px',
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
-              borderRadius: '4px',
-              border: '1px solid rgba(0, 0, 0, 0.1)',
-            }}
-          >
-            <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '8px' }}>
-              心率
-            </div>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '4px' }}>
-              {loading ? '-' : vitals.heartRate?.toFixed(1) ?? '-'}
-            </div>
-            <div style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>
-              bpm
-            </div>
-          </div>
+          {deviceVitals.map((device) => {
+            const fallRiskHighlight = device.fallRisk
+              ? 'rgba(220, 53, 69, 0.1)'
+              : 'rgba(0, 0, 0, 0.02)';
 
-          <div
-            style={{
-              padding: '16px',
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
-              borderRadius: '4px',
-              border: '1px solid rgba(0, 0, 0, 0.1)',
-            }}
-          >
-            <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '8px' }}>
-              呼吸率
-            </div>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '4px' }}>
-              {loading ? '-' : vitals.respirationRate?.toFixed(1) ?? '-'}
-            </div>
-            <div style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>
-              rpm
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '16px',
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
-              borderRadius: '4px',
-              border: '1px solid rgba(0, 0, 0, 0.1)',
-            }}
-          >
-            <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '8px' }}>
-              最小距离
-            </div>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '4px' }}>
-              {loading ? '-' : vitals.distanceMin?.toFixed(1) ?? '-'}
-            </div>
-            <div style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>
-              cm
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '16px',
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
-              borderRadius: '4px',
-              border: '1px solid rgba(0, 0, 0, 0.1)',
-            }}
-          >
-            <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '8px' }}>
-              运动幅度
-            </div>
-            <div style={{ fontSize: '32px', fontWeight: 'bold', marginBottom: '4px' }}>
-              {loading ? '-' : vitals.movementAmplitude?.toFixed(1) ?? '-'}
-            </div>
-            <div style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>
-              mm
-            </div>
-          </div>
+            return (
+              <div
+                key={device.deviceId}
+                style={{
+                  padding: '12px',
+                  backgroundColor: fallRiskHighlight,
+                  borderRadius: '6px',
+                  border: `1px solid ${
+                    device.fallRisk ? 'rgba(220, 53, 69, 0.4)' : 'rgba(0, 0, 0, 0.08)'
+                  }`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <span style={{ fontSize: '18px', fontWeight: 600 }}>
+                    房间 {device.room}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                    设备 ID: {device.deviceId}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: '8px',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    }}
+                  >
+                    <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)' }}>
+                      有人状态
+                    </span>
+                    <span style={{ fontSize: '16px', fontWeight: 600 }}>
+                      {loading ? '-' : device.occupied ? '有人' : '无人'}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      backgroundColor: device.fallRisk
+                        ? 'rgba(220, 53, 69, 0.15)'
+                        : 'rgba(0, 0, 0, 0.02)',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    }}
+                  >
+                    <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)' }}>
+                      摔倒风险
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '16px',
+                        fontWeight: 600,
+                        color: device.fallRisk ? '#d63342' : 'inherit',
+                      }}
+                    >
+                      {loading ? '-' : device.fallRisk ? '有风险' : '无风险'}
+                    </span>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: '8px',
+                  }}
+                >
+                  {renderMetric('心率', device.heartRate, 'bpm')}
+                  {renderMetric('呼吸率', device.respirationRate, 'rpm')}
+                  {renderMetric('最小距离', device.distanceMin, 'cm', 1)}
+                  {renderMetric('体动值', device.movementAmplitude, '', 1)}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Box>
     </Page>
