@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 import { Box, Button } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
@@ -16,11 +16,58 @@ type DeviceMetrics = {
   movementAmplitude: number | null;
 };
 
+type MetricKey = keyof DeviceMetrics;
+type MetricTrend = 'up' | 'down' | 'same';
+
+const createEmptyTrends = (): Record<MetricKey, MetricTrend> => ({
+  heartRate: 'same',
+  respirationRate: 'same',
+  distanceMin: 'same',
+  movementAmplitude: 'same',
+});
+
+const calculateTrends = (
+  previous: DeviceMetrics | undefined,
+  current: DeviceMetrics
+): Record<MetricKey, MetricTrend> => {
+  const trendFor = (key: MetricKey): MetricTrend => {
+    const prevValue = previous?.[key] ?? null;
+    const currValue = current[key];
+
+    if (
+      prevValue === null ||
+      Number.isNaN(prevValue) ||
+      currValue === null ||
+      Number.isNaN(currValue)
+    ) {
+      return 'same';
+    }
+
+    if (currValue > prevValue) {
+      return 'up';
+    }
+
+    if (currValue < prevValue) {
+      return 'down';
+    }
+
+    return 'same';
+  };
+
+  return {
+    heartRate: trendFor('heartRate'),
+    respirationRate: trendFor('respirationRate'),
+    distanceMin: trendFor('distanceMin'),
+    movementAmplitude: trendFor('movementAmplitude'),
+  };
+};
+
 interface DeviceVitals extends DeviceMetrics {
   deviceId: string;
   room: string;
   occupied: boolean;
   fallRisk: boolean;
+  trends: Record<MetricKey, MetricTrend>;
 }
 
 type DashboardSummary = {
@@ -133,6 +180,7 @@ const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
   ...createEmptyMetrics(),
   occupied: false,
   fallRisk: false,
+  trends: createEmptyTrends(),
 });
 
 export function HomePage() {
@@ -146,6 +194,8 @@ export function HomePage() {
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [isContactModalOpen, setContactModalOpen] = useState(false);
   const [isHelpModalOpen, setHelpModalOpen] = useState(false);
+
+  const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
 
   const showPlaceholder = !hasLoadedOnce && loading;
 
@@ -209,9 +259,13 @@ export function HomePage() {
         console.info('InfluxDB 响应:', response);
 
         const groupedMetrics = extractDeviceMetrics(response);
+        const previousMetrics = previousMetricsRef.current;
+        const nextMetricsMap = new Map<string, DeviceMetrics>();
 
         const updatedVitals = MONITORED_DEVICES.map((config) => {
           const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
+          nextMetricsMap.set(config.deviceId, metrics);
+          const trends = calculateTrends(previousMetrics.get(config.deviceId), metrics);
           const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
           const occupied =
             metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
@@ -225,8 +279,11 @@ export function HomePage() {
             movementAmplitude: metrics.movementAmplitude,
             occupied,
             fallRisk,
+            trends,
           };
         });
+
+        previousMetricsRef.current = nextMetricsMap;
 
         setDeviceVitals(updatedVitals);
         setLastUpdated(new Date().toLocaleTimeString());
@@ -263,32 +320,48 @@ export function HomePage() {
     label: string,
     value: number | null,
     unit: string,
+    trend: MetricTrend,
     fractionDigits = 0
-  ) => (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '8px 12px',
-        backgroundColor: 'rgba(0, 0, 0, 0.02)',
-        borderRadius: '4px',
-      }}
-    >
-      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '4px' }}>
-        {label}
-      </span>
-      <span style={{ fontSize: '24px', fontWeight: 600, marginBottom: '4px' }}>
-        {(() => {
-          const hasValue = value !== null && !Number.isNaN(value);
-          if (!hasLoadedOnce && loading && !hasValue) {
-            return '-';
-          }
-          return hasValue ? formatMetric(value, fractionDigits) : '-';
-        })()}
-      </span>
-      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
-    </div>
-  );
+  ) => {
+    const hasValue = value !== null && !Number.isNaN(value);
+    const arrow = !hasValue || showPlaceholder ? '—' : trend === 'up' ? '▲' : trend === 'down' ? '▼' : '—';
+    const arrowColor = arrow === '▲' ? '#28a745' : arrow === '▼' ? '#dc3545' : 'rgba(0, 0, 0, 0.35)';
+
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '8px 12px',
+          backgroundColor: 'rgba(0, 0, 0, 0.02)',
+          borderRadius: '4px',
+        }}
+      >
+        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '4px' }}>
+          {label}
+        </span>
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '24px',
+            fontWeight: 600,
+            marginBottom: '4px',
+          }}
+        >
+          {(() => {
+            if (!hasLoadedOnce && loading && !hasValue) {
+              return '-';
+            }
+            return hasValue ? formatMetric(value, fractionDigits) : '-';
+          })()}
+          <span style={{ fontSize: '18px', color: arrowColor }}>{arrow}</span>
+        </span>
+        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
+      </div>
+    );
+  };
 
   return (
     <Page navId="home">
@@ -494,10 +567,10 @@ export function HomePage() {
                     gap: '8px',
                   }}
                 >
-                  {renderMetric('心率', device.heartRate, 'bpm')}
-                  {renderMetric('呼吸率', device.respirationRate, 'rpm')}
-                  {renderMetric('距离', device.distanceMin, 'cm', 1)}
-                  {renderMetric('体动值', device.movementAmplitude, '', 1)}
+                  {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
+                  {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
+                  {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1)}
+                  {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1)}
                 </div>
               </div>
             );
