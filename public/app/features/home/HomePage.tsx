@@ -1,8 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { getBackendSrv } from 'app/core/services/backend_srv';
-
 import { Box } from '@grafana/ui';
-
 import { Page } from 'app/core/components/Page/Page';
 
 interface DeviceConfig {
@@ -30,10 +28,20 @@ type DashboardSummary = {
   title: string;
   url: string;
 };
-
+//房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
   { room: '1', deviceId: '84F7035346E0' },
-  { room: '2', deviceId: '10B41DC081B0'}
+  { room: '2', deviceId: '10B41DC081B0'},
+  { room: '3', deviceId: '10B41DC081B0'},
+  { room: '4', deviceId: '10B41DC081B0'},
+  { room: '5', deviceId: '10B41DC081B0'},
+  { room: '6', deviceId: '10B41DC081B0'},
+  { room: '7', deviceId: '10B41DC081B0'},
+  { room: '8', deviceId: '10B41DC081B0'},
+  { room: '9', deviceId: '10B41DC081B0'},
+  { room: '10', deviceId: '10B41DC081B0'},
+  { room: '11', deviceId: '10B41DC081B0'},
+  { room: '12', deviceId: '10B41DC081B0'},
   // 在此添加更多设备配置
 ];
 
@@ -200,8 +208,9 @@ export function HomePage() {
 
         const updatedVitals = MONITORED_DEVICES.map((config) => {
           const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
-          const occupied = Object.values(metrics).some((value) => value !== null);
           const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
+          const occupied =
+            metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
           return {
             deviceId: config.deviceId,
@@ -343,7 +352,7 @@ export function HomePage() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
             gap: '12px',
             width: '100%',
             maxWidth: '1200px',
@@ -417,7 +426,7 @@ export function HomePage() {
                       有人状态
                     </span>
                     <span style={{ fontSize: '16px', fontWeight: 600 }}>
-                      {showPlaceholder ? '-' : device.occupied ? '有人' : '无人'}
+                      {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
                     </span>
                   </div>
                   <div
