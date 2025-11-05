@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { getBackendSrv } from 'app/core/services/backend_srv';
-import { Box } from '@grafana/ui';
+import { Box, Button } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
 
 interface DeviceConfig {
@@ -144,6 +144,10 @@ export function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [isContactModalOpen, setContactModalOpen] = useState(false);
+  const [isHelpModalOpen, setHelpModalOpen] = useState(false);
+
+  const showPlaceholder = !hasLoadedOnce && loading;
 
   const dashboardUrlByDevice = useMemo(() => {
     const map = new Map<string, string>();
@@ -289,6 +293,29 @@ export function HomePage() {
   return (
     <Page navId="home">
       <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={4}>
+        <div
+          style={{
+            width: '100%',
+            maxWidth: '1200px',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: '8px',
+            marginBottom: '16px',
+          }}
+        >
+          <Button
+            variant="secondary"
+            onClick={() => window.open('https://chat.lanhc.com/?model=huian-huli', '_blank', 'noopener')}
+          >
+            智能体平台
+          </Button>
+          <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
+            帮助
+          </Button>
+          <Button variant="primary" onClick={() => setContactModalOpen(true)}>
+            联系我们
+          </Button>
+        </div>
         <h1 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}>
           欢迎来到惠康数据可视化平台
         </h1>
@@ -361,15 +388,22 @@ export function HomePage() {
         >
           {sortedDeviceVitals.map((device) => {
              const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
-             const fallRiskHighlight = device.fallRisk
-               ? 'rgba(220, 53, 69, 0.1)'
-               : 'rgba(0, 0, 0, 0.02)';
-            const hasAnyMetric =
-              device.heartRate !== null ||
-              device.respirationRate !== null ||
-              device.distanceMin !== null ||
-              device.movementAmplitude !== null;
-            const showPlaceholder = !hasLoadedOnce && loading && !hasAnyMetric;
+             const hasAnyMetric =
+               device.heartRate !== null ||
+               device.respirationRate !== null ||
+               device.distanceMin !== null ||
+               device.movementAmplitude !== null;
+            const hasData = hasAnyMetric;
+            const cardBackgroundColor = device.fallRisk
+              ? 'rgba(220, 53, 69, 0.12)'
+              : hasData
+              ? 'rgba(40, 167, 69, 0.15)'
+              : 'rgba(0, 0, 0, 0.02)';
+            const cardBorderColor = device.fallRisk
+              ? 'rgba(220, 53, 69, 0.4)'
+              : hasData
+              ? 'rgba(40, 167, 69, 0.5)'
+              : 'rgba(0, 0, 0, 0.08)';
 
             return (
               <div
@@ -381,11 +415,9 @@ export function HomePage() {
                 }}
                 style={{
                   padding: '12px',
-                  backgroundColor: fallRiskHighlight,
+                  backgroundColor: cardBackgroundColor,
                   borderRadius: '6px',
-                  border: `1px solid ${
-                    device.fallRisk ? 'rgba(220, 53, 69, 0.4)' : 'rgba(0, 0, 0, 0.08)'
-                  }`,
+                  border: `1px solid ${cardBorderColor}`,
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '10px',
@@ -472,6 +504,98 @@ export function HomePage() {
           })}
         </div>
       </Box>
+      {isHelpModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1300,
+          }}
+          onClick={() => setHelpModalOpen(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              padding: '24px',
+              borderRadius: '8px',
+              width: '90%',
+              maxWidth: '520px',
+              maxHeight: '80vh',
+              overflowY: 'auto',
+              boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 style={{ marginBottom: '12px' }}>界面使用教程</h2>
+            <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
+              <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
+              <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
+              <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
+            </ol>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={() => setHelpModalOpen(false)}>
+                关闭
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {isContactModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1300,
+          }}
+          onClick={() => setContactModalOpen(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              padding: '24px',
+              borderRadius: '8px',
+              width: '90%',
+              maxWidth: '600px',
+              maxHeight: '80vh',
+              overflowY: 'auto',
+              boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 style={{ marginBottom: '12px' }}>联系我们</h2>
+            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+              如果您对我们的 “人工智能 + 边缘计算” 相关产品与服务感兴趣，或有合作意向，欢迎通过以下方式与我们联系：
+            </p>
+            <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>团队背景</h3>
+            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+              我们是华侨大学华大智语 &amp; 清大华宇联合团队。华大智语由华侨大学王华珍副教授领衔，近 60 名师生组成，学术研发实力强劲；清大华宇是清华海峡研究院团队，拥有十多年产业化经验，提供算力和产品支撑。双方协同构建产学研协同基底，形成全链条技术闭环、学术与产业双轮驱动、“0→1 研发到 1→N 落地” 的核心优势，在华文教育机器人出海、智算中心服务等领域成果斐然。
+            </p>
+            <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>联系方式</h3>
+            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+              版权所有：华侨大学华大智语 | 清大华宇（厦门）数字科技有限公司<br />
+              地址：福建省厦门市集美区集美大道 668 号<br />
+              联系：wanghuazhen@hqu.edu.cn；lucky@lanhc.com<br />
+              友情链接：华侨大学、清华海峡研究院
+            </p>
+            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '16px' }}>
+              期待与您携手，共探人工智能与边缘计算的创新应用！
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={() => setContactModalOpen(false)}>
+                关闭
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </Page>
   );
 }
