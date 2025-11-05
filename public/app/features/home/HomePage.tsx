@@ -461,22 +461,22 @@ export function HomePage() {
         >
           {sortedDeviceVitals.map((device) => {
              const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
-             const hasAnyMetric =
-               device.heartRate !== null ||
-               device.respirationRate !== null ||
-               device.distanceMin !== null ||
-               device.movementAmplitude !== null;
-            const hasData = hasAnyMetric;
-            const cardBackgroundColor = device.fallRisk
-              ? 'rgba(220, 53, 69, 0.12)'
-              : hasData
-              ? 'rgba(40, 167, 69, 0.15)'
-              : 'rgba(0, 0, 0, 0.02)';
-            const cardBorderColor = device.fallRisk
-              ? 'rgba(220, 53, 69, 0.4)'
-              : hasData
-              ? 'rgba(40, 167, 69, 0.5)'
-              : 'rgba(0, 0, 0, 0.08)';
+             
+            
+            // 根据摔倒风险、有人状态、无人状态决定背景色
+            let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)'; // 默认：无人
+            let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
+            
+            if (device.fallRisk) {
+              // 摔倒风险优先级最高
+              cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
+              cardBorderColor = 'rgba(220, 53, 69, 0.4)';
+            } else if ( device.heartRate) {
+              // 有人状态：绿色
+              cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
+              cardBorderColor = 'rgba(40, 167, 69, 0.5)';
+            }
+            // 无人状态保持默认色（已初始化）
 
             return (
               <div
