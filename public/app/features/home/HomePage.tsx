@@ -77,18 +77,10 @@ type DashboardSummary = {
 };
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
-  { room: '1', deviceId: '84F7035346E0' },
-  { room: '2', deviceId: '10B41DC081B0'},
-  { room: '3', deviceId: '10B41DC081B0'},
-  { room: '4', deviceId: '10B41DC081B0'},
-  { room: '5', deviceId: '10B41DC081B0'},
-  { room: '6', deviceId: '10B41DC081B0'},
-  { room: '7', deviceId: '10B41DC081B0'},
-  { room: '8', deviceId: '10B41DC081B0'},
-  { room: '9', deviceId: '10B41DC081B0'},
-  { room: '10', deviceId: '10B41DC081B0'},
-  { room: '11', deviceId: '10B41DC081B0'},
-  { room: '12', deviceId: '10B41DC081B0'},
+  { room: '1', deviceId: '10B41DC081B0' },
+  { room: '2', deviceId: '84F7035346E0'},
+  { room: '3', deviceId: '10B41DC081B2'},
+  { room: '4', deviceId: '84F7035346E2'},
   // 在此添加更多设备配置
 ];
 
@@ -117,15 +109,19 @@ const formatMetric = (value: number | null, fractionDigits = 0): string => {
 const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
   const deviceFilter = buildDeviceFilter(devices);
   return `from(bucket: "${bucket}")
-  |> range(start: -5m)
+  |> range(start: -1m)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
   |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
-  |> filter(fn: (r) => ${deviceFilter})
-  |> last()`;
+  |> filter(fn: (r) => ${deviceFilter})`;
+  // 删除了 |> last()，获取全部数据点
 };
 
-const extractDeviceMetrics = (response: any): Map<string, DeviceMetrics> => {
-  const grouped = new Map<string, DeviceMetrics>();
+type DeviceMetricsWithRisk = DeviceMetrics & {
+  fallRiskDetected: boolean;
+};
+
+const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk> => {
+  const grouped = new Map<string, DeviceMetricsWithRisk>();
   const records = Array.isArray(response?.results) ? response.results : [];
 
   records.forEach((row: any) => {
@@ -142,7 +138,15 @@ const extractDeviceMetrics = (response: any): Map<string, DeviceMetrics> => {
       return;
     }
 
-    const metrics = grouped.get(deviceId) ?? createEmptyMetrics();
+    const metrics = grouped.get(deviceId) ?? {
+      ...createEmptyMetrics(),
+      fallRiskDetected: false,
+    };
+
+    // ✅ 检查体动值是否 > 900
+    if (field === 'movement_amplitude' && numericValue > 900) {
+      metrics.fallRiskDetected = true;
+    }
 
     switch (field) {
       case 'heart_rate_bpm':
@@ -226,10 +230,12 @@ export function HomePage() {
         ? searchResult
             .filter((item: any) => item?.type === 'dash-db' && typeof item?.url === 'string')
             .map((item: any) => ({
+              id: item.id,
               uid: String(item.uid ?? ''),
               title: String(item.title ?? ''),
               url: String(item.url ?? ''),
             }))
+            .sort((a: any, b: any) => a.id - b.id)
         : [];
 
       setDashboards(items);
@@ -263,10 +269,20 @@ export function HomePage() {
         const nextMetricsMap = new Map<string, DeviceMetrics>();
 
         const updatedVitals = MONITORED_DEVICES.map((config) => {
-          const metrics = groupedMetrics.get(config.deviceId) ?? createEmptyMetrics();
+          const metricsWithRisk = groupedMetrics.get(config.deviceId) ?? {
+            ...createEmptyMetrics(),
+            fallRiskDetected: false,
+          };
+          
+          // 分离风险标志
+          const { fallRiskDetected, ...metrics } = metricsWithRisk;
+          
           nextMetricsMap.set(config.deviceId, metrics);
           const trends = calculateTrends(previousMetrics.get(config.deviceId), metrics);
-          const fallRisk = metrics.movementAmplitude !== null && metrics.movementAmplitude > 900;
+          
+          // ✅ 使用查询中检测到的风险标志
+          const fallRisk = fallRiskDetected;
+          
           const occupied =
             metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
@@ -337,7 +353,7 @@ export function HomePage() {
           borderRadius: '4px',
         }}
       >
-        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)', marginBottom: '4px' }}>
+        <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', marginBottom: '6px', fontWeight: 600 }}>
           {label}
         </span>
         <span
@@ -345,8 +361,8 @@ export function HomePage() {
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
-            fontSize: '24px',
-            fontWeight: 600,
+            fontSize: '32px',
+            fontWeight: 800,
             marginBottom: '4px',
           }}
         >
@@ -365,15 +381,15 @@ export function HomePage() {
 
   return (
     <Page navId="home">
-      <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={4}>
+      <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={2}>
         <div
           style={{
             width: '100%',
             maxWidth: '1200px',
             display: 'flex',
             justifyContent: 'flex-end',
-            gap: '8px',
-            marginBottom: '16px',
+            gap: '4px',
+            marginBottom: '8px',
           }}
         >
           <Button
@@ -527,10 +543,10 @@ export function HomePage() {
                       gap: '4px',
                     }}
                   >
-                    <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)' }}>
+                    <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
                       有人状态
                     </span>
-                    <span style={{ fontSize: '16px', fontWeight: 600 }}>
+                    <span style={{ fontSize: '18px', fontWeight: 600 }}>
                       {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
                     </span>
                   </div>
@@ -546,12 +562,12 @@ export function HomePage() {
                       gap: '4px',
                     }}
                   >
-                    <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.6)' }}>
+                    <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
                       摔倒风险
                     </span>
                     <span
                       style={{
-                        fontSize: '16px',
+                        fontSize: '18px',
                         fontWeight: 600,
                         color: device.fallRisk ? '#d63342' : 'inherit',
                       }}
