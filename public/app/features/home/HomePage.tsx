@@ -144,7 +144,7 @@ const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk>
     };
 
     // ✅ 检查体动值是否 > 900
-    if (field === 'movement_amplitude' && numericValue > 900) {
+    if (field === 'movement_amplitude' && numericValue > 200) {
       metrics.fallRiskDetected = true;
     }
 
@@ -328,7 +328,7 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 100);
+    }, 10000);
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
@@ -347,9 +347,9 @@ export function HomePage() {
     const playNext = () => {
       if(index < roomIds.length){
         const roomId =roomIds[index];
-        const audioFilePATH = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3'
+        const audioFilePath = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3'
 
-        const audio =new Audio(audioFilePATH);
+        const audio =new Audio(audioFilePath);
         audio.volume = 0.9;
 
         audio.onended = () =>{
@@ -416,8 +416,8 @@ export function HomePage() {
       const displayNames = riskDevices.map((room) => `房间${room}`);
       setAlarmDevices(displayNames);
       setAlarmModalOpen(true);
-      const firstRoomId = riskDevices[0];
-      const audioFilePath = ALARM_SOUND_MAP[firstRoomId] || '/public/sounds/room1.mp3'
+      // const firstRoomId = riskDevices[0];
+      // const audioFilePath = ALARM_SOUND_MAP[firstRoomId] || '/public/sounds/room1.mp3'
       
       playMultipleAlarmSounds(riskDevices);
       //依次播放所有风险房间
