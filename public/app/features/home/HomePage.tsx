@@ -77,7 +77,7 @@ type DashboardSummary = {
 };
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
-  { room: '1', deviceId: '10B41DC081B0' },
+  { room: '1', deviceId: 'D0CF1316DEC4' },
   { room: '2', deviceId: '84F7035346E0'},
   { room: '3', deviceId: '10B41DC081B2'},
   { room: '4', deviceId: '84F7035346E2'},
@@ -198,8 +198,12 @@ export function HomePage() {
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [isContactModalOpen, setContactModalOpen] = useState(false);
   const [isHelpModalOpen, setHelpModalOpen] = useState(false);
+  const [isAlarmModalOpen, setAlarmModalOpen] = useState(false);
+  const [alarmDevices, setAlarmDevices] = useState<string[]>([]);
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const alarmPlayCountRef = useRef(0);
 
   const showPlaceholder = !hasLoadedOnce && loading;
 
@@ -324,9 +328,101 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 10000);
+    }, 100);
     return () => clearInterval(interval);
   }, [fetchVitals]);
+
+  //增加房间号映射 
+  const ALARM_SOUND_MAP: Record<string,string> ={
+    '1': '/public/sounds/room1.mp3',
+    '2': '/public/sounds/room2.mp3',
+    '3': '/public/sounds/room3.mp3',
+    '4': '/public/sounds/room4.mp3',
+
+  }
+
+  const playMultipleAlarmSounds = useCallback((roomIds: string[]) => {
+    let index = 0;
+    
+    const playNext = () => {
+      if(index < roomIds.length){
+        const roomId =roomIds[index];
+        const audioFilePATH = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3'
+
+        const audio =new Audio(audioFilePATH);
+        audio.volume = 0.9;
+
+        audio.onended = () =>{
+          index += 1;
+          playNext();
+        }
+        audioRef.current = audio;
+        audio.play();
+      }
+    }
+    playNext();
+
+  }, []); //依赖项数组
+
+  // const playAlarmSound = useCallback((filePath: string, repeatCount: number = 5) => {
+  //   try {
+  //     if (audioRef.current) {
+  //       audioRef.current.pause();
+  //       audioRef.current = null;
+  //     }
+
+  //     const audio = new Audio(filePath);
+  //     audio.volume = 0.8;
+  //     alarmPlayCountRef.current = 0;
+
+  //     const playNextLoop = () => {
+  //       if (alarmPlayCountRef.current < repeatCount) {
+  //         alarmPlayCountRef.current += 1;
+  //         audio.currentTime = 0;
+  //         audio.play().catch((err) => console.error('播放失败:', err));
+  //       }
+  //     };
+
+  //     audio.onended = playNextLoop;
+  //     audioRef.current = audio;
+  //     playNextLoop();
+  //   } catch (err) {
+  //     console.error('播放失败:', err);
+  //   }
+  // }, []);
+
+  const stopAlarmSound = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    alarmPlayCountRef.current = 0;
+  }, []);
+
+  const closeAlarmModal = useCallback(() => {
+    setAlarmModalOpen(false);
+    stopAlarmSound();
+    setAlarmDevices([]);
+  }, [stopAlarmSound]);
+
+  // 监听风险状态变化
+  useEffect(() => {
+    const riskDevices = deviceVitals
+      .filter((device) => device.fallRisk)
+      .map((device) => device.room);
+
+    if (riskDevices.length > 0) {
+      const displayNames = riskDevices.map((room) => `房间${room}`);
+      setAlarmDevices(displayNames);
+      setAlarmModalOpen(true);
+      const firstRoomId = riskDevices[0];
+      const audioFilePath = ALARM_SOUND_MAP[firstRoomId] || '/public/sounds/room1.mp3'
+      
+      playMultipleAlarmSounds(riskDevices);
+      //依次播放所有风险房间
+    }
+  }, [deviceVitals]);
 
   const handleManualRefresh = () => {
     fetchVitals({ showIndicator: true });
@@ -337,7 +433,8 @@ export function HomePage() {
     value: number | null,
     unit: string,
     trend: MetricTrend,
-    fractionDigits = 0
+    fractionDigits = 0,
+    showTrend = true
   ) => {
     const hasValue = value !== null && !Number.isNaN(value);
     const arrow = !hasValue || showPlaceholder ? '—' : trend === 'up' ? '▲' : trend === 'down' ? '▼' : '—';
@@ -372,7 +469,7 @@ export function HomePage() {
             }
             return hasValue ? formatMetric(value, fractionDigits) : '-';
           })()}
-          <span style={{ fontSize: '18px', color: arrowColor }}>{arrow}</span>
+          {showTrend && <span style={{ fontSize: '18px', color: arrowColor }}>{arrow}</span>}
         </span>
         <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
       </div>
@@ -585,14 +682,88 @@ export function HomePage() {
                 >
                   {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
                   {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
-                  {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1)}
-                  {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1)}
+                  {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
+                  {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
                 </div>
               </div>
             );
           })}
         </div>
       </Box>
+
+      {/* 报警弹窗 */}
+      {isAlarmModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1400,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              padding: '32px',
+              borderRadius: '8px',
+              width: '90%',
+              maxWidth: '450px',
+              boxShadow: '0 16px 32px rgba(0, 0, 0, 0.3)',
+              border: '2px solid #dc3545',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                marginBottom: '16px',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '28px',
+                  color: '#dc3545',
+                  marginRight: '12px',
+                }}
+              >
+                ⚠️
+              </span>
+              <h2 style={{ margin: 0, color: '#dc3545', fontSize: '20px' }}>
+                检测到摔倒风险
+              </h2>
+            </div>
+            <div
+              style={{
+                backgroundColor: '#fee',
+                padding: '16px',
+                borderRadius: '4px',
+                marginBottom: '20px',
+                border: '1px solid #fcc',
+              }}
+            >
+              <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600 }}>
+                以下房间存在风险：
+              </p>
+              <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)' }}>
+                {alarmDevices.map((device, index) => (
+                  <div key={index} style={{ marginBottom: '4px' }}>
+                    • {device}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <Button variant="secondary" onClick={closeAlarmModal}>
+                关闭警报
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isHelpModalOpen && (
         <div
           style={{
@@ -624,6 +795,9 @@ export function HomePage() {
               <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
               <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
               <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
+              <li>卡片颜色指示状态：绿色表示有人且无风险，红色表示检测到摔倒风险。</li>
+              <li>目前如果1分钟内有任何风险值，都会提示存在风险。</li>
+                          
             </ol>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button variant="secondary" onClick={() => setHelpModalOpen(false)}>
