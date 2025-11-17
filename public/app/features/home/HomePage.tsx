@@ -77,7 +77,8 @@ type DashboardSummary = {
 };
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
-  { room: '1', deviceId: 'D0CF1316DEC4' },
+  // { room: '1', deviceId: 'D0CF1316DEC4' },
+  { room: '1', deviceId: 'B8F862F6BFD8'},
   { room: '2', deviceId: '84F7035346E0'},
   { room: '3', deviceId: '10B41DC081B2'},
   { room: '4', deviceId: '84F7035346E2'},
@@ -200,6 +201,9 @@ export function HomePage() {
   const [isHelpModalOpen, setHelpModalOpen] = useState(false);
   const [isAlarmModalOpen, setAlarmModalOpen] = useState(false);
   const [alarmDevices, setAlarmDevices] = useState<string[]>([]);
+  const [lastAlarmTime, setLastAlarmTime] = useState<number>(0);
+  const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Set<string>>(new Set()); // ✅ 添加
+  const alarmingRoomsRef = useRef<Set<string>>(new Set());
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -401,9 +405,14 @@ export function HomePage() {
   }, []);
 
   const closeAlarmModal = useCallback(() => {
+    const currentRooms = new Set(alarmingRoomsRef.current);
+    setAcknowledgedRiskRooms(currentRooms);
+
     setAlarmModalOpen(false);
     stopAlarmSound();
     setAlarmDevices([]);
+    alarmingRoomsRef.current.clear();
+    setLastAlarmTime(Date.now());
   }, [stopAlarmSound]);
 
   // 监听风险状态变化
@@ -413,16 +422,41 @@ export function HomePage() {
       .map((device) => device.room);
 
     if (riskDevices.length > 0) {
-      const displayNames = riskDevices.map((room) => `房间${room}`);
-      setAlarmDevices(displayNames);
-      setAlarmModalOpen(true);
-      // const firstRoomId = riskDevices[0];
-      // const audioFilePath = ALARM_SOUND_MAP[firstRoomId] || '/public/sounds/room1.mp3'
-      
-      playMultipleAlarmSounds(riskDevices);
-      //依次播放所有风险房间
+      const now = Date.now();
+      const timeSinceLastAlarm = now - lastAlarmTime;
+      const ALARM_COOLDOWN_MS = 5000;
+
+      // ✅ 检查是否有新增的风险房间（排除已确认的）
+      const newRiskRooms = riskDevices.filter(
+        (room) => !acknowledgedRiskRooms.has(room) && !alarmingRoomsRef.current.has(room)
+      );
+
+      // 首次触发或检测到新增房间风险时播放
+      if (
+        newRiskRooms.length > 0 &&
+        (timeSinceLastAlarm > ALARM_COOLDOWN_MS || !isAlarmModalOpen)
+      ) {
+        const displayNames = riskDevices.map((room) => `房间${room}`);
+        setAlarmDevices(displayNames);
+        setAlarmModalOpen(true);
+        playMultipleAlarmSounds(newRiskRooms);
+
+        riskDevices.forEach((room) => alarmingRoomsRef.current.add(room));
+        setLastAlarmTime(now);
+      } else if (isAlarmModalOpen && riskDevices.length > 0) {
+        // ✅ 弹窗已打开时，更新显示的房间列表
+        const displayNames = riskDevices.map((room) => `房间${room}`);
+        setAlarmDevices(displayNames);
+      }
+    } else {
+      // 所有房间都恢复正常
+      alarmingRoomsRef.current.clear();
+      setAcknowledgedRiskRooms(new Set()); // ✅ 清空已确认记录
+      setAlarmModalOpen(false);
+      stopAlarmSound();
+      setAlarmDevices([]);
     }
-  }, [deviceVitals]);
+  }, [deviceVitals, lastAlarmTime, isAlarmModalOpen, acknowledgedRiskRooms, playMultipleAlarmSounds, stopAlarmSound]);
 
   const handleManualRefresh = () => {
     fetchVitals({ showIndicator: true });
