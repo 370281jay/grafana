@@ -202,12 +202,14 @@ export function HomePage() {
   const [isAlarmModalOpen, setAlarmModalOpen] = useState(false);
   const [alarmDevices, setAlarmDevices] = useState<string[]>([]);
   const [lastAlarmTime, setLastAlarmTime] = useState<number>(0);
-  const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Set<string>>(new Set()); // ✅ 添加
+  const ACK_COOLDOWN_MS = 60000; // 1 分钟
+  const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Map<string, number>>(new Map()); // ✅ 添加
   const alarmingRoomsRef = useRef<Set<string>>(new Set());
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const alarmPlayCountRef = useRef(0);
+  const alarmTimeoutRef = useRef<number | null>(null); // ✅ 添加
 
   const showPlaceholder = !hasLoadedOnce && loading;
 
@@ -347,53 +349,57 @@ export function HomePage() {
 
   const playMultipleAlarmSounds = useCallback((roomIds: string[]) => {
     let index = 0;
+    let loopCount = 0;
+    const MAX_LOOPS = 10;
     
     const playNext = () => {
-      if(index < roomIds.length){
-        const roomId =roomIds[index];
-        const audioFilePath = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3'
+      if (loopCount >= MAX_LOOPS) {
+        return;
+      }
 
-        const audio =new Audio(audioFilePath);
-        audio.volume = 0.9;
+      if (index < roomIds.length) {
+        const roomId = roomIds[index];
+        const audioFilePath = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3';
 
-        audio.onended = () =>{
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+
+        const audio = new Audio(audioFilePath);
+        const volume = 0.9;
+        audio.volume = Math.min(1, Math.max(0, volume));
+
+        audio.onended = () => {
+          if (audioRef.current === audio) {
+            audioRef.current = null;
+          }
           index += 1;
           playNext();
-        }
+        };
+
+        audio.onerror = () => {
+          console.error(`音频加载失败: ${audioFilePath}`);
+          index += 1;
+          playNext();
+        };
+
         audioRef.current = audio;
-        audio.play();
+        audio.play().catch((err) => console.error('播放失败:', err));
+      } else {
+        index = 0;
+        loopCount += 1;
+        
+        if (loopCount < MAX_LOOPS) {
+          alarmTimeoutRef.current = window.setTimeout(() => {
+            playNext();
+          }, 500);
+        }
       }
-    }
+    };
+
     playNext();
-
-  }, []); //依赖项数组
-
-  // const playAlarmSound = useCallback((filePath: string, repeatCount: number = 5) => {
-  //   try {
-  //     if (audioRef.current) {
-  //       audioRef.current.pause();
-  //       audioRef.current = null;
-  //     }
-
-  //     const audio = new Audio(filePath);
-  //     audio.volume = 0.8;
-  //     alarmPlayCountRef.current = 0;
-
-  //     const playNextLoop = () => {
-  //       if (alarmPlayCountRef.current < repeatCount) {
-  //         alarmPlayCountRef.current += 1;
-  //         audio.currentTime = 0;
-  //         audio.play().catch((err) => console.error('播放失败:', err));
-  //       }
-  //     };
-
-  //     audio.onended = playNextLoop;
-  //     audioRef.current = audio;
-  //     playNextLoop();
-  //   } catch (err) {
-  //     console.error('播放失败:', err);
-  //   }
-  // }, []);
+  }, []);
 
   const stopAlarmSound = useCallback(() => {
     if (audioRef.current) {
@@ -401,18 +407,30 @@ export function HomePage() {
       audioRef.current.currentTime = 0;
       audioRef.current = null;
     }
+    // ✅ 清除待定的超时
+    if (alarmTimeoutRef.current !== null) {
+      window.clearTimeout(alarmTimeoutRef.current);
+      alarmTimeoutRef.current = null;
+    }
     alarmPlayCountRef.current = 0;
   }, []);
 
   const closeAlarmModal = useCallback(() => {
+    const now = Date.now();
     const currentRooms = new Set(alarmingRoomsRef.current);
-    setAcknowledgedRiskRooms(currentRooms);
+    setAcknowledgedRiskRooms((prev) => {
+      const next = new Map(prev);
+      currentRooms.forEach((room) => {
+        next.set(room, now);
+      });
+      return next;
+    });
 
     setAlarmModalOpen(false);
     stopAlarmSound();
     setAlarmDevices([]);
     alarmingRoomsRef.current.clear();
-    setLastAlarmTime(Date.now());
+    setLastAlarmTime(now);
   }, [stopAlarmSound]);
 
   // 监听风险状态变化
@@ -424,12 +442,13 @@ export function HomePage() {
     if (riskDevices.length > 0) {
       const now = Date.now();
       const timeSinceLastAlarm = now - lastAlarmTime;
-      const ALARM_COOLDOWN_MS = 5000;
+      const ALARM_COOLDOWN_MS = 10000;
 
-      // ✅ 检查是否有新增的风险房间（排除已确认的）
-      const newRiskRooms = riskDevices.filter(
-        (room) => !acknowledgedRiskRooms.has(room) && !alarmingRoomsRef.current.has(room)
-      );
+      const newRiskRooms = riskDevices.filter((room) => {
+        const lastAck = acknowledgedRiskRooms.get(room);
+        const ackExpired = !lastAck || now - lastAck >= ACK_COOLDOWN_MS;
+        return ackExpired && !alarmingRoomsRef.current.has(room);
+      });
 
       // 首次触发或检测到新增房间风险时播放
       if (
@@ -444,19 +463,18 @@ export function HomePage() {
         riskDevices.forEach((room) => alarmingRoomsRef.current.add(room));
         setLastAlarmTime(now);
       } else if (isAlarmModalOpen && riskDevices.length > 0) {
-        // ✅ 弹窗已打开时，更新显示的房间列表
         const displayNames = riskDevices.map((room) => `房间${room}`);
         setAlarmDevices(displayNames);
       }
     } else {
       // 所有房间都恢复正常
       alarmingRoomsRef.current.clear();
-      setAcknowledgedRiskRooms(new Set()); // ✅ 清空已确认记录
+      setAcknowledgedRiskRooms((prev) => (prev.size === 0 ? prev : new Map()));
       setAlarmModalOpen(false);
       stopAlarmSound();
       setAlarmDevices([]);
     }
-  }, [deviceVitals, lastAlarmTime, isAlarmModalOpen, acknowledgedRiskRooms, playMultipleAlarmSounds, stopAlarmSound]);
+  }, [deviceVitals, lastAlarmTime, isAlarmModalOpen, acknowledgedRiskRooms]);
 
   const handleManualRefresh = () => {
     fetchVitals({ showIndicator: true });
