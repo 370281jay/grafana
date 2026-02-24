@@ -334,7 +334,7 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 10000);
+    }, 6000); //6s刷新一次
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
@@ -494,6 +494,7 @@ export function HomePage() {
 
     return (
       <div
+        className="hp-metric-item"
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -506,6 +507,7 @@ export function HomePage() {
           {label}
         </span>
         <span
+          className="hp-metric-value"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -553,6 +555,89 @@ export function HomePage() {
 
   return (
     <Page navId="home">
+      {/* ========== 响应式样式 ========== */}
+      <style>{`
+        /* ---------- 手机竖屏 (≤ 576px) ---------- */
+        @media (max-width: 576px) {
+          .hp-root {
+            padding: 8px 6px 16px 6px !important;
+          }
+          .hp-title {
+            font-size: 22px !important;
+            line-height: 1.3 !important;
+            margin-bottom: 10px !important;
+          }
+          .hp-top-buttons {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 6px !important;
+          }
+          .hp-top-buttons > button {
+            width: 100% !important;
+            justify-content: center !important;
+          }
+          .hp-refresh-bar {
+            flex-direction: column !important;
+            align-items: center !important;
+            gap: 8px !important;
+          }
+          .hp-refresh-bar button {
+            margin-left: 0 !important;
+            width: 100% !important;
+          }
+          .hp-card-grid {
+            grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+          }
+          .hp-card {
+            padding: 10px !important;
+          }
+          .hp-card-header span:first-child {
+            font-size: 16px !important;
+          }
+          .hp-status-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+          .hp-metrics-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+          .hp-metric-value {
+            font-size: 24px !important;
+          }
+          /* 弹窗在手机上全宽 */
+          .hp-modal-content {
+            width: 95% !important;
+            max-width: none !important;
+            padding: 16px !important;
+          }
+          .hp-modal-content h2 {
+            font-size: 18px !important;
+          }
+        }
+
+        /* ---------- 手机横屏 / 小平板 (577px – 768px) ---------- */
+        @media (min-width: 577px) and (max-width: 768px) {
+          .hp-title {
+            font-size: 30px !important;
+          }
+          .hp-card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+          .hp-metric-value {
+            font-size: 26px !important;
+          }
+        }
+
+        /* ---------- 平板 (769px – 1024px) ---------- */
+        @media (min-width: 769px) and (max-width: 1024px) {
+          .hp-title {
+            font-size: 36px !important;
+          }
+          .hp-card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+        }
+      `}</style>
+
       {/* 音频权限弹窗 */}
       {showAudioPermissionModal && !isAudioPermissionGranted && (
         <div
@@ -567,6 +652,7 @@ export function HomePage() {
           }}
         >
           <div
+            className="hp-modal-content"
             style={{
               backgroundColor: '#fff',
               padding: '32px',
@@ -584,17 +670,8 @@ export function HomePage() {
                 marginBottom: '16px',
               }}
             >
-              <span
-                style={{
-                  fontSize: '28px',
-                  marginRight: '12px',
-                }}
-              >
-                🔊
-              </span>
-              <h2 style={{ margin: 0, fontSize: '20px' }}>
-                启用音频通知
-              </h2>
+              <span style={{ fontSize: '28px', marginRight: '12px' }}>🔊</span>
+              <h2 style={{ margin: 0, fontSize: '20px' }}>启用音频通知</h2>
             </div>
             <div
               style={{
@@ -608,13 +685,8 @@ export function HomePage() {
               <p style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 600 }}>
                 为了在检测到摔倒风险时及时通知您，需要您允许浏览器播放音频。
               </p>
-              {/* <ul style={{ margin: '0', paddingLeft: '18px', fontSize: '14px', color: 'rgba(0, 0, 0, 0.7)' }}>
-                <li style={{ marginBottom: '8px' }}>系统将在检测到风险时播放对应房间的警报音</li>
-                <li style={{ marginBottom: '8px' }}>您可以随时在关闭警报后继续使用平台</li>
-                <li>建议在安静环境中启用此功能以获得最佳体验</li>
-              </ul> */}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', flexWrap: 'wrap' }}>
               <Button variant="secondary" onClick={() => setShowAudioPermissionModal(false)}>
                 暂时跳过
               </Button>
@@ -626,220 +698,236 @@ export function HomePage() {
         </div>
       )}
 
-      {/* 主页面内容 - 只在用户授权后或跳过后显示 */}
+      {/* 主页面内容 */}
       {!showAudioPermissionModal && (
         <>
-          <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={2}>
-            <div
-              style={{
-                width: '100%',
-                maxWidth: '1200px',
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: '4px',
-                marginBottom: '8px',
-              }}
+          <div className="hp-root">
+            <Box
+              display="flex"
+              direction="column"
+              alignItems="center"
+              justifyContent="center"
+              paddingY={2}
             >
-              <Button
-                variant="secondary"
-                onClick={() => window.open('https://chat.lanhc.com/?model=huian-huli', '_blank', 'noopener')}
-              >
-                智能体平台
-              </Button>
-              <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
-                帮助
-              </Button>
-              <Button variant="primary" onClick={() => setContactModalOpen(true)}>
-                联系我们
-              </Button>
-            </div>
-            <h1 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}>
-              欢迎来到惠康数据可视化平台
-            </h1>
-           
-
-            {/* 错误提示 */}
-            {error && (
+              {/* 顶部操作按钮 */}
               <div
+                className="hp-top-buttons"
                 style={{
                   width: '100%',
                   maxWidth: '1200px',
-                  padding: '16px',
-                  marginBottom: '24px',
-                  backgroundColor: '#fee',
-                  borderRadius: '4px',
-                  border: '1px solid #fcc',
-                  color: '#c33',
-                  fontSize: '14px',
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  gap: '4px',
+                  marginBottom: '8px',
                 }}
               >
-                {error}
+                <Button
+                  variant="secondary"
+                  onClick={() => window.open('https://chat.lanhc.com/?model=huian-huli', '_blank', 'noopener')}
+                >
+                  智能体平台
+                </Button>
+                <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
+                  帮助
+                </Button>
+                <Button variant="primary" onClick={() => setContactModalOpen(true)}>
+                  联系我们
+                </Button>
               </div>
-            )}
 
-            {/* 刷新状态信息 */}
-            <div
-              style={{
-                width: '100%',
-                maxWidth: '1200px',
-                marginBottom: '24px',
-                fontSize: '12px',
-                color: 'rgba(0, 0, 0, 0.5)',
-                textAlign: 'center',
-              }}
-            >
-              {loading ? (
-                <span>正在加载数据...</span>
-              ) : (
-                <>
-                  <span>最后更新: {lastUpdated}</span>
-                  <button
-                    onClick={handleManualRefresh}
-                    style={{
-                      marginLeft: '16px',
-                      padding: '4px 12px',
-                      backgroundColor: '#0066cc',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '12px',
-                    }}
-                  >
-                    手动刷新
-                  </button>
-                </>
+              {/* 标题 */}
+              <h1
+                className="hp-title"
+                style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}
+              >
+                欢迎来到华康数据可视化平台
+              </h1>
+
+              {/* 错误提示 */}
+              {error && (
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: '1200px',
+                    padding: '16px',
+                    marginBottom: '24px',
+                    backgroundColor: '#fee',
+                    borderRadius: '4px',
+                    border: '1px solid #fcc',
+                    color: '#c33',
+                    fontSize: '14px',
+                  }}
+                >
+                  {error}
+                </div>
               )}
-            </div>
 
-            {/* 健康数据面板 */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-                gap: '12px',
-                width: '100%',
-                maxWidth: '1200px',
-                marginBottom: '24px',
-              }}
-            >
-              {sortedDeviceVitals.map((device) => {
-                 const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
-                
-                // 根据摔倒风险、有人状态、无人状态决定背景色
-                let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)'; // 默认：无人
-                let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
-                
-                if (device.fallRisk) {
-                  // 摔倒风险优先级最高
-                  cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
-                  cardBorderColor = 'rgba(220, 53, 69, 0.4)';
-                } else if ( device.heartRate) {
-                  // 有人状态：绿色
-                  cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
-                  cardBorderColor = 'rgba(40, 167, 69, 0.5)';
-                }
-                // 无人状态保持默认色（已初始化）
-
-                return (
-                  <div
-                    key={device.deviceId}
-                    onClick={() => {
-                      if (dashboardLink) {
-                        window.location.assign(dashboardLink);
-                      }
-                    }}
-                    style={{
-                      padding: '12px',
-                      backgroundColor: cardBackgroundColor,
-                      borderRadius: '6px',
-                      border: `1px solid ${cardBorderColor}`,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '10px',
-                      cursor: dashboardLink ? 'pointer' : 'default',
-                    }}
-                  >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                        房间 {device.room}
-                      </span>
-                      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
-                        设备 ID: {device.deviceId}
-                      </span>
-                      {dashboardLink && (
-                        <span style={{ fontSize: '12px', color: '#0066cc' }}>
-                          点击进入仪表板
-                        </span>
-                      )}
-                    </div>
-                    <div
+              {/* 刷新状态信息 */}
+              <div
+                className="hp-refresh-bar"
+                style={{
+                  width: '100%',
+                  maxWidth: '1200px',
+                  marginBottom: '24px',
+                  fontSize: '12px',
+                  color: 'rgba(0, 0, 0, 0.5)',
+                  textAlign: 'center',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+              >
+                {loading ? (
+                  <span>正在加载数据...</span>
+                ) : (
+                  <>
+                    <span>最后更新: {lastUpdated}</span>
+                    <button
+                      onClick={handleManualRefresh}
                       style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                        gap: '8px',
+                        marginLeft: '16px',
+                        padding: '4px 12px',
+                        backgroundColor: '#0066cc',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
                       }}
                     >
-                      <div
-                        style={{
-                          padding: '8px 12px',
-                          backgroundColor: 'rgba(0, 0, 0, 0.02)',
-                          borderRadius: '4px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '4px',
-                        }}
-                      >
-                        <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                          有人状态
+                      手动刷新
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* 健康数据面板 */}
+              <div
+                className="hp-card-grid"
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+                  gap: '12px',
+                  width: '100%',
+                  maxWidth: '1200px',
+                  marginBottom: '24px',
+                }}
+              >
+                {sortedDeviceVitals.map((device) => {
+                  const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
+
+                  let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)';
+                  let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
+
+                  if (device.fallRisk) {
+                    cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
+                    cardBorderColor = 'rgba(220, 53, 69, 0.4)';
+                  } else if (device.heartRate) {
+                    cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
+                    cardBorderColor = 'rgba(40, 167, 69, 0.5)';
+                  }
+
+                  return (
+                    <div
+                      key={device.deviceId}
+                      className="hp-card"
+                      onClick={() => {
+                        if (dashboardLink) {
+                          window.location.assign(dashboardLink);
+                        }
+                      }}
+                      style={{
+                        padding: '12px',
+                        backgroundColor: cardBackgroundColor,
+                        borderRadius: '6px',
+                        border: `1px solid ${cardBorderColor}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                        cursor: dashboardLink ? 'pointer' : 'default',
+                      }}
+                    >
+                      <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '18px', fontWeight: 600 }}>房间 {device.room}</span>
+                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                          设备 ID: {device.deviceId}
                         </span>
-                        <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                          {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
-                        </span>
+                        {dashboardLink && (
+                          <span style={{ fontSize: '12px', color: '#0066cc' }}>点击进入仪表板</span>
+                        )}
                       </div>
+
+                      {/* 有人状态 / 摔倒风险 */}
                       <div
+                        className="hp-status-grid"
                         style={{
-                          padding: '8px 12px',
-                          backgroundColor: device.fallRisk
-                            ? 'rgba(220, 53, 69, 0.15)'
-                            : 'rgba(0, 0, 0, 0.02)',
-                          borderRadius: '4px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '4px',
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                          gap: '8px',
                         }}
                       >
-                        <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                          摔倒风险
-                        </span>
-                        <span
+                        <div
                           style={{
-                            fontSize: '18px',
-                            fontWeight: 600,
-                            color: device.fallRisk ? '#d63342' : 'inherit',
+                            padding: '8px 12px',
+                            backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px',
                           }}
                         >
-                          {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
-                        </span>
+                          <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                            有人状态
+                          </span>
+                          <span style={{ fontSize: '18px', fontWeight: 600 }}>
+                            {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            padding: '8px 12px',
+                            backgroundColor: device.fallRisk ? 'rgba(220, 53, 69, 0.15)' : 'rgba(0, 0, 0, 0.02)',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px',
+                          }}
+                        >
+                          <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                            摔倒风险
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '18px',
+                              fontWeight: 600,
+                              color: device.fallRisk ? '#d63342' : 'inherit',
+                            }}
+                          >
+                            {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* 指标 */}
+                      <div
+                        className="hp-metrics-grid"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                          gap: '8px',
+                        }}
+                      >
+                        {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
+                        {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
+                        {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
+                        {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                        gap: '8px',
-                      }}
-                    >
-                      {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
-                      {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
-                      {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
-                      {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Box>
+                  );
+                })}
+              </div>
+            </Box>
+          </div>
 
           {/* 报警弹窗 */}
           {isAlarmModalOpen && (
@@ -855,6 +943,7 @@ export function HomePage() {
               }}
             >
               <div
+                className="hp-modal-content"
                 style={{
                   backgroundColor: '#fff',
                   padding: '32px',
@@ -865,25 +954,9 @@ export function HomePage() {
                   border: '2px solid #dc3545',
                 }}
               >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    marginBottom: '16px',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: '28px',
-                      color: '#dc3545',
-                      marginRight: '12px',
-                    }}
-                  >
-                    ⚠️
-                  </span>
-                  <h2 style={{ margin: 0, color: '#dc3545', fontSize: '20px' }}>
-                    检测到摔倒风险
-                  </h2>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
+                  <span style={{ fontSize: '28px', color: '#dc3545', marginRight: '12px' }}>⚠️</span>
+                  <h2 style={{ margin: 0, color: '#dc3545', fontSize: '20px' }}>检测到摔倒风险</h2>
                 </div>
                 <div
                   style={{
@@ -894,9 +967,7 @@ export function HomePage() {
                     border: '1px solid #fcc',
                   }}
                 >
-                  <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600 }}>
-                    以下房间存在风险：
-                  </p>
+                  <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600 }}>以下房间存在风险：</p>
                   <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)' }}>
                     {alarmDevices.map((device, index) => (
                       <div key={index} style={{ marginBottom: '4px' }}>
@@ -914,6 +985,7 @@ export function HomePage() {
             </div>
           )}
 
+          {/* 帮助弹窗 */}
           {isHelpModalOpen && (
             <div
               style={{
@@ -928,6 +1000,7 @@ export function HomePage() {
               onClick={() => setHelpModalOpen(false)}
             >
               <div
+                className="hp-modal-content"
                 style={{
                   backgroundColor: '#fff',
                   padding: '24px',
@@ -944,10 +1017,9 @@ export function HomePage() {
                 <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
                   <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
                   <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
-                  <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
+                  <li>使用"手动刷新"按钮获取最新数据，或等待系统自动更新。</li>
                   <li>卡片颜色指示状态：绿色表示有人且无风险，红色表示检测到摔倒风险。</li>
                   <li>目前如果1分钟内有任何风险值，都会提示存在风险。</li>
-                          
                 </ol>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <Button variant="secondary" onClick={() => setHelpModalOpen(false)}>
@@ -957,6 +1029,8 @@ export function HomePage() {
               </div>
             </div>
           )}
+
+          {/* 联系我们弹窗 */}
           {isContactModalOpen && (
             <div
               style={{
@@ -971,6 +1045,7 @@ export function HomePage() {
               onClick={() => setContactModalOpen(false)}
             >
               <div
+                className="hp-modal-content"
                 style={{
                   backgroundColor: '#fff',
                   padding: '24px',
@@ -985,18 +1060,23 @@ export function HomePage() {
               >
                 <h2 style={{ marginBottom: '12px' }}>联系我们</h2>
                 <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-                  如果您对我们的 “人工智能 + 边缘计算” 相关产品与服务感兴趣，或有合作意向，欢迎通过以下方式与我们联系：
+                  如果您对我们的 &quot;人工智能 + 边缘计算&quot; 相关产品与服务感兴趣，或有合作意向，欢迎通过以下方式与我们联系：
                 </p>
                 <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>团队背景</h3>
                 <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-                  我们是华侨大学华大智语 &amp; 清大华宇联合团队。华大智语由华侨大学王华珍副教授领衔，近 60 名师生组成，学术研发实力强劲；清大华宇是清华海峡研究院团队，拥有十多年产业化经验，提供算力和产品支撑。双方协同构建产学研协同基底，形成全链条技术闭环、学术与产业双轮驱动、“0→1 研发到 1→N 落地” 的核心优势，在华文教育机器人出海、智算中心服务等领域成果斐然。
+                  我们是华侨大学华大智语 &amp; 清大华宇联合团队。华大智语由华侨大学王华珍副教授领衔，近 60
+                  名师生组成，学术研发实力强劲；清大华宇是清华海峡研究院团队，拥有十多年产业化经验，提供算力和产品支撑。双方协同构建产学研协同基底，形成全链条技术闭环、学术与产业双轮驱动、&quot;0→1
+                  研发到 1→N 落地&quot;
+                  的核心优势，在华文教育机器人出海、智算中心服务等领域成果斐然。
                 </p>
                 <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>联系方式</h3>
                 <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-                  版权所有：华侨大学华大智语 | 清大华宇（厦门）数字科技有限公司<br />
-                  地址：福建省厦门市集美区集美大道 668 号<br />
-                  联系：wanghuazhen@hqu.edu.cn；lucky@lanhc.com<br />
-                  友情链接：华侨大学、清华海峡研究院
+                  版权所有：华侨大学华大智语 | 清大华宇（厦门）数字科技有限公司
+                  <br />
+                  地址：福建省厦门市集美区集美大道 668 号
+                  <br />
+                  联系：wanghuazhen@hqu.edu.cn；lucky@lanhc.com
+                  <br />
                 </p>
                 <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '16px' }}>
                   期待与您携手，共探人工智能与边缘计算的创新应用！
