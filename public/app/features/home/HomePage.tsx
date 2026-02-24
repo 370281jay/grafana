@@ -145,7 +145,7 @@ const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk>
     };
 
     // ✅ 检查体动值是否 > 900
-    if (field === 'movement_amplitude' && numericValue > 200) {
+    if (field === 'movement_amplitude' && numericValue > 800) {
       metrics.fallRiskDetected = true;
     }
 
@@ -528,223 +528,33 @@ export function HomePage() {
     );
   };
 
+  const [isAudioPermissionGranted, setIsAudioPermissionGranted] = useState(false);
+  const [showAudioPermissionModal, setShowAudioPermissionModal] = useState(true);
+
+  const handleAudioPermissionGrant = useCallback(() => {
+    setIsAudioPermissionGranted(true);
+    setShowAudioPermissionModal(false);
+    // 同时触发首次数据加载
+    fetchVitals({ showIndicator: true });
+  }, [fetchVitals]);
+
+  // 修改原有的 useEffect，延迟首次加载直到用户授权
+  useEffect(() => {
+    if (!isAudioPermissionGranted) {
+      return;
+    }
+
+    // 只有在用户授权后才进行定时更新
+    const interval = setInterval(() => {
+      fetchVitals();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [fetchVitals, isAudioPermissionGranted]);
+
   return (
     <Page navId="home">
-      <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={2}>
-        <div
-          style={{
-            width: '100%',
-            maxWidth: '1200px',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '4px',
-            marginBottom: '8px',
-          }}
-        >
-          <Button
-            variant="secondary"
-            onClick={() => window.open('https://chat.lanhc.com/?model=huian-huli', '_blank', 'noopener')}
-          >
-            智能体平台
-          </Button>
-          <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
-            帮助
-          </Button>
-          <Button variant="primary" onClick={() => setContactModalOpen(true)}>
-            联系我们
-          </Button>
-        </div>
-        <h1 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}>
-          欢迎来到惠康数据可视化平台
-        </h1>
-       
-
-        {/* 错误提示 */}
-        {error && (
-          <div
-            style={{
-              width: '100%',
-              maxWidth: '1200px',
-              padding: '16px',
-              marginBottom: '24px',
-              backgroundColor: '#fee',
-              borderRadius: '4px',
-              border: '1px solid #fcc',
-              color: '#c33',
-              fontSize: '14px',
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        {/* 刷新状态信息 */}
-        <div
-          style={{
-            width: '100%',
-            maxWidth: '1200px',
-            marginBottom: '24px',
-            fontSize: '12px',
-            color: 'rgba(0, 0, 0, 0.5)',
-            textAlign: 'center',
-          }}
-        >
-          {loading ? (
-            <span>正在加载数据...</span>
-          ) : (
-            <>
-              <span>最后更新: {lastUpdated}</span>
-              <button
-                onClick={handleManualRefresh}
-                style={{
-                  marginLeft: '16px',
-                  padding: '4px 12px',
-                  backgroundColor: '#0066cc',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                }}
-              >
-                手动刷新
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* 健康数据面板 */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: '12px',
-            width: '100%',
-            maxWidth: '1200px',
-            marginBottom: '24px',
-          }}
-        >
-          {sortedDeviceVitals.map((device) => {
-             const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
-             
-            
-            // 根据摔倒风险、有人状态、无人状态决定背景色
-            let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)'; // 默认：无人
-            let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
-            
-            if (device.fallRisk) {
-              // 摔倒风险优先级最高
-              cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
-              cardBorderColor = 'rgba(220, 53, 69, 0.4)';
-            } else if ( device.heartRate) {
-              // 有人状态：绿色
-              cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
-              cardBorderColor = 'rgba(40, 167, 69, 0.5)';
-            }
-            // 无人状态保持默认色（已初始化）
-
-            return (
-              <div
-                key={device.deviceId}
-                onClick={() => {
-                  if (dashboardLink) {
-                    window.location.assign(dashboardLink);
-                  }
-                }}
-                style={{
-                  padding: '12px',
-                  backgroundColor: cardBackgroundColor,
-                  borderRadius: '6px',
-                  border: `1px solid ${cardBorderColor}`,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '10px',
-                  cursor: dashboardLink ? 'pointer' : 'default',
-                }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                    房间 {device.room}
-                  </span>
-                  <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
-                    设备 ID: {device.deviceId}
-                  </span>
-                  {dashboardLink && (
-                    <span style={{ fontSize: '12px', color: '#0066cc' }}>
-                      点击进入仪表板
-                    </span>
-                  )}
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: '8px',
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: '8px 12px',
-                      backgroundColor: 'rgba(0, 0, 0, 0.02)',
-                      borderRadius: '4px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px',
-                    }}
-                  >
-                    <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                      有人状态
-                    </span>
-                    <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                      {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      padding: '8px 12px',
-                      backgroundColor: device.fallRisk
-                        ? 'rgba(220, 53, 69, 0.15)'
-                        : 'rgba(0, 0, 0, 0.02)',
-                      borderRadius: '4px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px',
-                    }}
-                  >
-                    <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                      摔倒风险
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '18px',
-                        fontWeight: 600,
-                        color: device.fallRisk ? '#d63342' : 'inherit',
-                      }}
-                    >
-                      {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
-                    </span>
-                  </div>
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: '8px',
-                  }}
-                >
-                  {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
-                  {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
-                  {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
-                  {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Box>
-
-      {/* 报警弹窗 */}
-      {isAlarmModalOpen && (
+      {/* 音频权限弹窗 */}
+      {showAudioPermissionModal && !isAudioPermissionGranted && (
         <div
           style={{
             position: 'fixed',
@@ -753,7 +563,7 @@ export function HomePage() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 1400,
+            zIndex: 2000,
           }}
         >
           <div
@@ -764,7 +574,7 @@ export function HomePage() {
               width: '90%',
               maxWidth: '450px',
               boxShadow: '0 16px 32px rgba(0, 0, 0, 0.3)',
-              border: '2px solid #dc3545',
+              border: '2px solid #0066cc',
             }}
           >
             <div
@@ -777,139 +587,429 @@ export function HomePage() {
               <span
                 style={{
                   fontSize: '28px',
-                  color: '#dc3545',
                   marginRight: '12px',
                 }}
               >
-                ⚠️
+                🔊
               </span>
-              <h2 style={{ margin: 0, color: '#dc3545', fontSize: '20px' }}>
-                检测到摔倒风险
+              <h2 style={{ margin: 0, fontSize: '20px' }}>
+                启用音频通知
               </h2>
             </div>
             <div
               style={{
-                backgroundColor: '#fee',
+                backgroundColor: '#f0f7ff',
                 padding: '16px',
                 borderRadius: '4px',
                 marginBottom: '20px',
-                border: '1px solid #fcc',
+                border: '1px solid #0066cc',
               }}
             >
-              <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600 }}>
-                以下房间存在风险：
+              <p style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 600 }}>
+                为了在检测到摔倒风险时及时通知您，需要您允许浏览器播放音频。
               </p>
-              <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)' }}>
-                {alarmDevices.map((device, index) => (
-                  <div key={index} style={{ marginBottom: '4px' }}>
-                    • {device}
-                  </div>
-                ))}
-              </div>
+              {/* <ul style={{ margin: '0', paddingLeft: '18px', fontSize: '14px', color: 'rgba(0, 0, 0, 0.7)' }}>
+                <li style={{ marginBottom: '8px' }}>系统将在检测到风险时播放对应房间的警报音</li>
+                <li style={{ marginBottom: '8px' }}>您可以随时在关闭警报后继续使用平台</li>
+                <li>建议在安静环境中启用此功能以获得最佳体验</li>
+              </ul> */}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <Button variant="secondary" onClick={closeAlarmModal}>
-                关闭警报
+              <Button variant="secondary" onClick={() => setShowAudioPermissionModal(false)}>
+                暂时跳过
+              </Button>
+              <Button variant="primary" onClick={handleAudioPermissionGrant}>
+                启用音频通知
               </Button>
             </div>
           </div>
         </div>
       )}
 
-      {isHelpModalOpen && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.45)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1300,
-          }}
-          onClick={() => setHelpModalOpen(false)}
-        >
-          <div
-            style={{
-              backgroundColor: '#fff',
-              padding: '24px',
-              borderRadius: '8px',
-              width: '90%',
-              maxWidth: '520px',
-              maxHeight: '80vh',
-              overflowY: 'auto',
-              boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
-            }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2 style={{ marginBottom: '12px' }}>界面使用教程</h2>
-            <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
-              <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
-              <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
-              <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
-              <li>卡片颜色指示状态：绿色表示有人且无风险，红色表示检测到摔倒风险。</li>
-              <li>目前如果1分钟内有任何风险值，都会提示存在风险。</li>
+      {/* 主页面内容 - 只在用户授权后或跳过后显示 */}
+      {!showAudioPermissionModal && (
+        <>
+          <Box display="flex" direction="column" alignItems="center" justifyContent="center" paddingY={2}>
+            <div
+              style={{
+                width: '100%',
+                maxWidth: '1200px',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '4px',
+                marginBottom: '8px',
+              }}
+            >
+              <Button
+                variant="secondary"
+                onClick={() => window.open('https://chat.lanhc.com/?model=huian-huli', '_blank', 'noopener')}
+              >
+                智能体平台
+              </Button>
+              <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
+                帮助
+              </Button>
+              <Button variant="primary" onClick={() => setContactModalOpen(true)}>
+                联系我们
+              </Button>
+            </div>
+            <h1 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}>
+              欢迎来到惠康数据可视化平台
+            </h1>
+           
+
+            {/* 错误提示 */}
+            {error && (
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: '1200px',
+                  padding: '16px',
+                  marginBottom: '24px',
+                  backgroundColor: '#fee',
+                  borderRadius: '4px',
+                  border: '1px solid #fcc',
+                  color: '#c33',
+                  fontSize: '14px',
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            {/* 刷新状态信息 */}
+            <div
+              style={{
+                width: '100%',
+                maxWidth: '1200px',
+                marginBottom: '24px',
+                fontSize: '12px',
+                color: 'rgba(0, 0, 0, 0.5)',
+                textAlign: 'center',
+              }}
+            >
+              {loading ? (
+                <span>正在加载数据...</span>
+              ) : (
+                <>
+                  <span>最后更新: {lastUpdated}</span>
+                  <button
+                    onClick={handleManualRefresh}
+                    style={{
+                      marginLeft: '16px',
+                      padding: '4px 12px',
+                      backgroundColor: '#0066cc',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                    }}
+                  >
+                    手动刷新
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* 健康数据面板 */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+                gap: '12px',
+                width: '100%',
+                maxWidth: '1200px',
+                marginBottom: '24px',
+              }}
+            >
+              {sortedDeviceVitals.map((device) => {
+                 const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
+                
+                // 根据摔倒风险、有人状态、无人状态决定背景色
+                let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)'; // 默认：无人
+                let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
+                
+                if (device.fallRisk) {
+                  // 摔倒风险优先级最高
+                  cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
+                  cardBorderColor = 'rgba(220, 53, 69, 0.4)';
+                } else if ( device.heartRate) {
+                  // 有人状态：绿色
+                  cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
+                  cardBorderColor = 'rgba(40, 167, 69, 0.5)';
+                }
+                // 无人状态保持默认色（已初始化）
+
+                return (
+                  <div
+                    key={device.deviceId}
+                    onClick={() => {
+                      if (dashboardLink) {
+                        window.location.assign(dashboardLink);
+                      }
+                    }}
+                    style={{
+                      padding: '12px',
+                      backgroundColor: cardBackgroundColor,
+                      borderRadius: '6px',
+                      border: `1px solid ${cardBorderColor}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                      cursor: dashboardLink ? 'pointer' : 'default',
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 600 }}>
+                        房间 {device.room}
+                      </span>
+                      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                        设备 ID: {device.deviceId}
+                      </span>
+                      {dashboardLink && (
+                        <span style={{ fontSize: '12px', color: '#0066cc' }}>
+                          点击进入仪表板
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                        gap: '8px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                        }}
+                      >
+                        <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                          有人状态
+                        </span>
+                        <span style={{ fontSize: '18px', fontWeight: 600 }}>
+                          {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          backgroundColor: device.fallRisk
+                            ? 'rgba(220, 53, 69, 0.15)'
+                            : 'rgba(0, 0, 0, 0.02)',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                        }}
+                      >
+                        <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                          摔倒风险
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '18px',
+                            fontWeight: 600,
+                            color: device.fallRisk ? '#d63342' : 'inherit',
+                          }}
+                        >
+                          {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
+                        </span>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                        gap: '8px',
+                      }}
+                    >
+                      {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
+                      {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
+                      {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
+                      {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Box>
+
+          {/* 报警弹窗 */}
+          {isAlarmModalOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.65)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1400,
+              }}
+            >
+              <div
+                style={{
+                  backgroundColor: '#fff',
+                  padding: '32px',
+                  borderRadius: '8px',
+                  width: '90%',
+                  maxWidth: '450px',
+                  boxShadow: '0 16px 32px rgba(0, 0, 0, 0.3)',
+                  border: '2px solid #dc3545',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '28px',
+                      color: '#dc3545',
+                      marginRight: '12px',
+                    }}
+                  >
+                    ⚠️
+                  </span>
+                  <h2 style={{ margin: 0, color: '#dc3545', fontSize: '20px' }}>
+                    检测到摔倒风险
+                  </h2>
+                </div>
+                <div
+                  style={{
+                    backgroundColor: '#fee',
+                    padding: '16px',
+                    borderRadius: '4px',
+                    marginBottom: '20px',
+                    border: '1px solid #fcc',
+                  }}
+                >
+                  <p style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600 }}>
+                    以下房间存在风险：
+                  </p>
+                  <div style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)' }}>
+                    {alarmDevices.map((device, index) => (
+                      <div key={index} style={{ marginBottom: '4px' }}>
+                        • {device}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                  <Button variant="secondary" onClick={closeAlarmModal}>
+                    关闭警报
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isHelpModalOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1300,
+              }}
+              onClick={() => setHelpModalOpen(false)}
+            >
+              <div
+                style={{
+                  backgroundColor: '#fff',
+                  padding: '24px',
+                  borderRadius: '8px',
+                  width: '90%',
+                  maxWidth: '520px',
+                  maxHeight: '80vh',
+                  overflowY: 'auto',
+                  boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
+                }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h2 style={{ marginBottom: '12px' }}>界面使用教程</h2>
+                <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
+                  <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
+                  <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
+                  <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
+                  <li>卡片颜色指示状态：绿色表示有人且无风险，红色表示检测到摔倒风险。</li>
+                  <li>目前如果1分钟内有任何风险值，都会提示存在风险。</li>
                           
-            </ol>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="secondary" onClick={() => setHelpModalOpen(false)}>
-                关闭
-              </Button>
+                </ol>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Button variant="secondary" onClick={() => setHelpModalOpen(false)}>
+                    关闭
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
-      {isContactModalOpen && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.45)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1300,
-          }}
-          onClick={() => setContactModalOpen(false)}
-        >
-          <div
-            style={{
-              backgroundColor: '#fff',
-              padding: '24px',
-              borderRadius: '8px',
-              width: '90%',
-              maxWidth: '600px',
-              maxHeight: '80vh',
-              overflowY: 'auto',
-              boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
-            }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2 style={{ marginBottom: '12px' }}>联系我们</h2>
-            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-              如果您对我们的 “人工智能 + 边缘计算” 相关产品与服务感兴趣，或有合作意向，欢迎通过以下方式与我们联系：
-            </p>
-            <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>团队背景</h3>
-            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-              我们是华侨大学华大智语 &amp; 清大华宇联合团队。华大智语由华侨大学王华珍副教授领衔，近 60 名师生组成，学术研发实力强劲；清大华宇是清华海峡研究院团队，拥有十多年产业化经验，提供算力和产品支撑。双方协同构建产学研协同基底，形成全链条技术闭环、学术与产业双轮驱动、“0→1 研发到 1→N 落地” 的核心优势，在华文教育机器人出海、智算中心服务等领域成果斐然。
-            </p>
-            <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>联系方式</h3>
-            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
-              版权所有：华侨大学华大智语 | 清大华宇（厦门）数字科技有限公司<br />
-              地址：福建省厦门市集美区集美大道 668 号<br />
-              联系：wanghuazhen@hqu.edu.cn；lucky@lanhc.com<br />
-              友情链接：华侨大学、清华海峡研究院
-            </p>
-            <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '16px' }}>
-              期待与您携手，共探人工智能与边缘计算的创新应用！
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="secondary" onClick={() => setContactModalOpen(false)}>
-                关闭
-              </Button>
+          )}
+          {isContactModalOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1300,
+              }}
+              onClick={() => setContactModalOpen(false)}
+            >
+              <div
+                style={{
+                  backgroundColor: '#fff',
+                  padding: '24px',
+                  borderRadius: '8px',
+                  width: '90%',
+                  maxWidth: '600px',
+                  maxHeight: '80vh',
+                  overflowY: 'auto',
+                  boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
+                }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h2 style={{ marginBottom: '12px' }}>联系我们</h2>
+                <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+                  如果您对我们的 “人工智能 + 边缘计算” 相关产品与服务感兴趣，或有合作意向，欢迎通过以下方式与我们联系：
+                </p>
+                <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>团队背景</h3>
+                <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+                  我们是华侨大学华大智语 &amp; 清大华宇联合团队。华大智语由华侨大学王华珍副教授领衔，近 60 名师生组成，学术研发实力强劲；清大华宇是清华海峡研究院团队，拥有十多年产业化经验，提供算力和产品支撑。双方协同构建产学研协同基底，形成全链条技术闭环、学术与产业双轮驱动、“0→1 研发到 1→N 落地” 的核心优势，在华文教育机器人出海、智算中心服务等领域成果斐然。
+                </p>
+                <h3 style={{ fontSize: '16px', marginBottom: '8px' }}>联系方式</h3>
+                <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
+                  版权所有：华侨大学华大智语 | 清大华宇（厦门）数字科技有限公司<br />
+                  地址：福建省厦门市集美区集美大道 668 号<br />
+                  联系：wanghuazhen@hqu.edu.cn；lucky@lanhc.com<br />
+                  友情链接：华侨大学、清华海峡研究院
+                </p>
+                <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '16px' }}>
+                  期待与您携手，共探人工智能与边缘计算的创新应用！
+                </p>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Button variant="secondary" onClick={() => setContactModalOpen(false)}>
+                    关闭
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
     </Page>
   );
