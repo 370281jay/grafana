@@ -530,12 +530,19 @@ export function HomePage() {
     );
   };
 
-  const [isAudioPermissionGranted, setIsAudioPermissionGranted] = useState(false);
-  const [showAudioPermissionModal, setShowAudioPermissionModal] = useState(true);
+  // 使用 sessionStorage 持久化音频权限状态，防止切换页面后弹窗重复弹出
+  const [isAudioPermissionGranted, setIsAudioPermissionGranted] = useState(() => {
+    return sessionStorage.getItem('hp-audio-permission') === 'granted';
+  });
+  const [showAudioPermissionModal, setShowAudioPermissionModal] = useState(() => {
+    // 如果已经授权或已经跳过，就不再弹出
+    return sessionStorage.getItem('hp-audio-permission') === null;
+  });
 
   const handleAudioPermissionGrant = useCallback(() => {
     setIsAudioPermissionGranted(true);
     setShowAudioPermissionModal(false);
+    sessionStorage.setItem('hp-audio-permission', 'granted');
     // 同时触发首次数据加载
     fetchVitals({ showIndicator: true });
   }, [fetchVitals]);
@@ -687,7 +694,10 @@ export function HomePage() {
               </p>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', flexWrap: 'wrap' }}>
-              <Button variant="secondary" onClick={() => setShowAudioPermissionModal(false)}>
+              <Button variant="secondary" onClick={() => {
+                setShowAudioPermissionModal(false);
+                sessionStorage.setItem('hp-audio-permission', 'skipped');
+              }}>
                 暂时跳过
               </Button>
               <Button variant="primary" onClick={handleAudioPermissionGrant}>
