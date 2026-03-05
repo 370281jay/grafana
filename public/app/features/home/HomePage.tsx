@@ -334,7 +334,7 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 6000); //6s刷新一次
+    }, 2000); //2s刷新一次
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
