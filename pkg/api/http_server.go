@@ -425,6 +425,10 @@ func (hs *HTTPServer) Run(ctx context.Context) error {
 
 	hs.applyRoutes()
 
+	// 启动后端 vitals 缓存刷新（每 1s 更新一次）
+	hs.startVitalsCacheRefresh()
+	hs.log.Info("Started vitals cache refresh background job")
+
 	// Remove any square brackets enclosing IPv6 addresses, a format we support for backwards compatibility
 	host := strings.TrimSuffix(strings.TrimPrefix(hs.Cfg.HTTPAddr, "["), "]")
 	hs.httpSrv = &http.Server{

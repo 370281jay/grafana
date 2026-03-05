@@ -110,11 +110,10 @@ const formatMetric = (value: number | null, fractionDigits = 0): string => {
 const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
   const deviceFilter = buildDeviceFilter(devices);
   return `from(bucket: "${bucket}")
-  |> range(start: -1m)
+  |> range(start: -3s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
   |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
   |> filter(fn: (r) => ${deviceFilter})`;
-  // 删除了 |> last()，获取全部数据点
 };
 
 type DeviceMetricsWithRisk = DeviceMetrics & {
@@ -273,6 +272,12 @@ export function HomePage() {
         });
 
         console.info('InfluxDB 响应:', response);
+        
+        // 打印缓存时间戳，用于调试延时问题
+        if (response?.timestamp) {
+          const cacheAge = Date.now() - response.timestamp;
+          console.info(`缓存年龄: ${cacheAge}ms`);
+        }
 
         const groupedMetrics = extractDeviceMetrics(response);
         const previousMetrics = previousMetricsRef.current;
@@ -334,7 +339,7 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 2000); //2s刷新一次
+    }, 1000); // 缩短到 1s 轮询一次，配合后端 1s 缓存刷新
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
