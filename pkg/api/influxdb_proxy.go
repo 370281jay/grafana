@@ -156,27 +156,48 @@ func parseFluxCSV(body []byte) ([]map[string]string, error) {
     return rows, nil
 }
 
-// 后端主动查询 InfluxDB 并更新缓存（后台运行）
+// ===== 固定时间段回放模式 =====
+// 一次性拉取 2026-03-07 19:00 ~ 19:05 的数据，按秒循环回放
+
+var (
+    // 固定时间段的全量数据（启动时从 InfluxDB 拉取一次）
+    fixedPeriodData      []map[string]string
+    fixedPeriodDataMutex sync.RWMutex
+    fixedPeriodLoaded    bool
+
+    // 固定时间段起止（UTC+8）
+    fixedStart = time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)  // 19:00 CST = 11:00 UTC
+    fixedEnd   = time.Date(2026, 3, 7, 11, 5, 0, 0, time.UTC)  // 19:05 CST = 11:05 UTC
+    fixedDuration = fixedEnd.Sub(fixedStart) // 5 分钟
+)
+
+// 后端主动查询 InfluxDB 并更新缓存（后台运行）——固定时间段循环回放模式
 func (hs *HTTPServer) startVitalsCacheRefresh() {
     go func() {
+        // 第一步：一次性拉取固定时间段的全部数据
+        hs.loadFixedPeriodData()
+
+        // 第二步：每秒按时间偏移从全量数据中取出对应时刻的数据，循环回放
         ticker := time.NewTicker(1 * time.Second)
         defer ticker.Stop()
 
+        startPlayback := time.Now()
+
         for range ticker.C {
-            hs.refreshVitalsCache()
+            hs.replayVitalsCache(startPlayback)
         }
     }()
 }
 
-func (hs *HTTPServer) refreshVitalsCache() {
-    // 构建查询语句 - 只查询最近 10 秒的数据
+// loadFixedPeriodData 一次性从 InfluxDB 拉取固定 5 分钟的数据
+func (hs *HTTPServer) loadFixedPeriodData() {
     devices := []string{
         "B8F862F6BFD8",  // room 1
         "84F7035346E0",  // room 2
         "10B41DC081B2",  // room 3
         "84F7035346E2",  // room 4
     }
-    
+
     deviceFilter := strings.Join(
         func() []string {
             var filters []string
@@ -189,25 +210,132 @@ func (hs *HTTPServer) refreshVitalsCache() {
     )
 
     fluxQuery := fmt.Sprintf(`from(bucket: "%s")
-  |> range(start: -10s)
+  |> range(start: %s, stop: %s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
   |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
-  |> filter(fn: (r) => %s)`, defaultBucket, deviceFilter)
+  |> filter(fn: (r) => %s)`,
+        defaultBucket,
+        fixedStart.Format(time.RFC3339),
+        fixedEnd.Format(time.RFC3339),
+        deviceFilter,
+    )
 
-    data, err := hs.executeInfluxQuery(fluxQuery)
-    if err != nil {
-        hs.log.Error("Failed to refresh vitals cache", "error", err)
+    hs.log.Info("Loading fixed period data from InfluxDB",
+        "start", fixedStart.Format(time.RFC3339),
+        "stop", fixedEnd.Format(time.RFC3339))
+
+    for retries := 0; retries < 5; retries++ {
+        data, err := hs.executeInfluxQuery(fluxQuery)
+        if err != nil {
+            hs.log.Error("Failed to load fixed period data, retrying...", "error", err, "retry", retries+1)
+            time.Sleep(3 * time.Second)
+            continue
+        }
+
+        fixedPeriodDataMutex.Lock()
+        fixedPeriodData = data
+        fixedPeriodLoaded = true
+        fixedPeriodDataMutex.Unlock()
+
+        hs.log.Info("Fixed period data loaded successfully", "recordCount", len(data))
         return
+    }
+
+    hs.log.Error("Failed to load fixed period data after all retries")
+}
+
+// replayVitalsCache 根据当前墙钟时间计算在 5 分钟窗口内的偏移，取出对应秒的数据写入缓存
+func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
+    fixedPeriodDataMutex.RLock()
+    if !fixedPeriodLoaded || len(fixedPeriodData) == 0 {
+        fixedPeriodDataMutex.RUnlock()
+        return
+    }
+    allData := fixedPeriodData
+    fixedPeriodDataMutex.RUnlock()
+
+    // 当前回放已经过去了多少时间，对 5 分钟取模，实现循环
+    elapsed := time.Since(startPlayback)
+    offset := elapsed % fixedDuration // 0 ~ 5min 循环
+
+    // 当前虚拟时间点
+    virtualNow := fixedStart.Add(offset)
+    windowStart := virtualNow.Add(-5 * time.Second) // 取前 5 秒的数据窗口
+
+    // 从全量数据中筛选落在 [windowStart, virtualNow] 的记录
+    var matched []map[string]string
+    for _, row := range allData {
+        tStr, ok := row["_time"]
+        if !ok {
+            continue
+        }
+        t, err := time.Parse(time.RFC3339Nano, tStr)
+        if err != nil {
+            t, err = time.Parse(time.RFC3339, tStr)
+            if err != nil {
+                continue
+            }
+        }
+        if (t.Equal(windowStart) || t.After(windowStart)) && (t.Equal(virtualNow) || t.Before(virtualNow)) {
+            matched = append(matched, row)
+        }
+    }
+
+    // 如果当前窗口没数据，取最近的一条（避免空白）
+    if len(matched) == 0 {
+        matched = findClosestRecords(allData, virtualNow)
     }
 
     vitalsCacheMutex.Lock()
     vitalsCache = CachedVitalsData{
-        Results:   data,
+        Results:   matched,
         Timestamp: time.Now().UnixMilli(),
     }
     vitalsCacheMutex.Unlock()
 
-    hs.log.Debug("Vitals cache refreshed", "recordCount", len(data))
+    hs.log.Debug("Vitals cache replayed",
+        "virtualTime", virtualNow.Format(time.RFC3339),
+        "matchedRecords", len(matched),
+        "offset", offset.String())
+}
+
+// findClosestRecords 当窗口内无数据时，找到离 virtualNow 最近的每个 device+field 的记录
+func findClosestRecords(allData []map[string]string, virtualNow time.Time) []map[string]string {
+    type key struct {
+        deviceID string
+        field    string
+    }
+    closest := make(map[key]map[string]string)
+    closestDiff := make(map[key]time.Duration)
+
+    for _, row := range allData {
+        tStr, ok := row["_time"]
+        if !ok {
+            continue
+        }
+        t, err := time.Parse(time.RFC3339Nano, tStr)
+        if err != nil {
+            t, err = time.Parse(time.RFC3339, tStr)
+            if err != nil {
+                continue
+            }
+        }
+        k := key{deviceID: row["device_id"], field: row["_field"]}
+        diff := virtualNow.Sub(t)
+        if diff < 0 {
+            diff = -diff
+        }
+        if prev, exists := closestDiff[k]; !exists || diff < prev {
+            closestDiff[k] = diff
+            closest[k] = row
+        }
+    }
+
+    result := make([]map[string]string, 0, len(closest))
+    for _, row := range closest {
+        result = append(result, row)
+    }
+    return result
 }
 
 func (hs *HTTPServer) executeInfluxQuery(fluxQuery string) ([]map[string]string, error) {
