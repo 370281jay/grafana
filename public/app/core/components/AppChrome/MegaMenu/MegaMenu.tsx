@@ -4,12 +4,13 @@ import { memo, forwardRef, useCallback } from 'react';
 import { useLocation } from 'react-router-dom-v5-compat';
 
 import { usePatchUserPreferencesMutation } from '@grafana/api-clients/rtkq/legacy/preferences';
-import { GrafanaTheme2, NavModelItem } from '@grafana/data';
+import { GrafanaTheme2, NavModelItem, OrgRole } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t } from '@grafana/i18n';
 import { config, reportInteraction } from '@grafana/runtime';
 import { ScrollContainer, useStyles2 } from '@grafana/ui';
 import { useGrafana } from 'app/core/context/GrafanaContext';
+import { contextSrv } from 'app/core/services/context_srv';
 import { setBookmark } from 'app/core/reducers/navBarTree';
 import { useDispatch, useSelector } from 'app/types/store';
 
@@ -36,8 +37,12 @@ export const MegaMenu = memo(
     const pinnedItems = usePinnedItems();
 
     // Remove profile + help from tree
+    const isViewer = contextSrv.user.orgRole === OrgRole.Viewer && !contextSrv.isGrafanaAdmin;
+    const allowedNavIdsForViewer = ['home', 'dashboards/browse'];
+
     const navItems = navTree
       .filter((item) => item.id !== 'profile' && item.id !== 'help')
+      .filter((item) => !isViewer || allowedNavIdsForViewer.includes(item.id ?? ''))
       .map((item) => enrichWithInteractionTracking(item, state.megaMenuDocked));
 
     if (config.featureToggles.pinNavItems) {

@@ -16,6 +16,22 @@ type DeviceMetrics = {
   movementAmplitude: number | null;
 };
 
+// 每个指标的"最后有效值"及其时间戳，用于空白帧保持显示
+type MetricLastKnown = {
+  value: number;
+  timestamp: number; // ms
+};
+
+type DeviceLastKnownMetrics = {
+  heartRate: MetricLastKnown | null;
+  respirationRate: MetricLastKnown | null;
+  distanceMin: MetricLastKnown | null;
+  movementAmplitude: MetricLastKnown | null;
+};
+
+// 超过该时长未收到有效数据，才真正将显示值置空（毫秒）
+const METRIC_STALE_THRESHOLD_MS = 10000;
+
 type MetricKey = keyof DeviceMetrics;
 type MetricTrend = 'up' | 'down' | 'same';
 
@@ -68,6 +84,8 @@ interface DeviceVitals extends DeviceMetrics {
   occupied: boolean;
   fallRisk: boolean;
   trends: Record<MetricKey, MetricTrend>;
+  // 标记哪些字段当前是"保持显示"的旧值（空白帧时不清零）
+  staleFields: Partial<Record<MetricKey, boolean>>;
 }
 
 type DashboardSummary = {
@@ -185,6 +203,7 @@ const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
   occupied: false,
   fallRisk: false,
   trends: createEmptyTrends(),
+  staleFields: {},
 });
 
 export function HomePage() {
@@ -206,6 +225,8 @@ export function HomePage() {
   const alarmingRoomsRef = useRef<Set<string>>(new Set());
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
+  // 记录每个设备各指标的最后有效值和时间戳，用于空白帧时保持显示
+  const lastKnownMetricsRef = useRef<Map<string, DeviceLastKnownMetrics>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const alarmPlayCountRef = useRef(0);
   const alarmTimeoutRef = useRef<number | null>(null); // ✅ 添加
@@ -282,22 +303,57 @@ export function HomePage() {
         const groupedMetrics = extractDeviceMetrics(response);
         const previousMetrics = previousMetricsRef.current;
         const nextMetricsMap = new Map<string, DeviceMetrics>();
+        const now = Date.now();
 
-        const updatedVitals = MONITORED_DEVICES.map((config) => {
+        const updatedVitals: DeviceVitals[] = MONITORED_DEVICES.map((config) => {
           const metricsWithRisk = groupedMetrics.get(config.deviceId) ?? {
             ...createEmptyMetrics(),
             fallRiskDetected: false,
           };
-          
+
           // 分离风险标志
-          const { fallRiskDetected, ...metrics } = metricsWithRisk;
-          
+          const { fallRiskDetected, ...rawMetrics } = metricsWithRisk;
+
+          // ——— 空白帧保持策略 ———
+          // 对 heartRate / respirationRate 做"最后有效值"填充：
+          // 若本帧为 null，但上次有效值未超过 METRIC_STALE_THRESHOLD_MS，则保持旧值显示，
+          // 并在 staleFields 中标记，以便渲染时用灰色区分。
+          const deviceLastKnown = lastKnownMetricsRef.current.get(config.deviceId) ?? {
+            heartRate: null,
+            respirationRate: null,
+            distanceMin: null,
+            movementAmplitude: null,
+          };
+
+          const staleFields: Partial<Record<MetricKey, boolean>> = {};
+          const STALE_KEYS: MetricKey[] = ['heartRate', 'respirationRate', 'distanceMin', 'movementAmplitude'];
+          const metrics: DeviceMetrics = { ...rawMetrics };
+
+          STALE_KEYS.forEach((key) => {
+            const rawVal = rawMetrics[key];
+            if (rawVal !== null && !Number.isNaN(rawVal)) {
+              // 本帧有有效值 → 更新 lastKnown
+              deviceLastKnown[key] = { value: rawVal, timestamp: now };
+            } else {
+              // 本帧为空白 → 尝试用 lastKnown 填充
+              const known = deviceLastKnown[key];
+              if (known !== null && now - known.timestamp < METRIC_STALE_THRESHOLD_MS) {
+                metrics[key] = known.value;
+                staleFields[key] = true; // 标记为"保持显示"的旧值
+              }
+              // 超过时效则保持 null，界面显示 '-'
+            }
+          });
+
+          lastKnownMetricsRef.current.set(config.deviceId, deviceLastKnown);
+          // ——— 结束空白帧保持策略 ———
+
           nextMetricsMap.set(config.deviceId, metrics);
           const trends = calculateTrends(previousMetrics.get(config.deviceId), metrics);
-          
-          // ✅ 使用查询中检测到的风险标志
+
+          // 使用查询中检测到的风险标志
           const fallRisk = fallRiskDetected;
-          
+
           const occupied =
             metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
@@ -311,6 +367,7 @@ export function HomePage() {
             occupied,
             fallRisk,
             trends,
+            staleFields,
           };
         });
 
@@ -339,7 +396,7 @@ export function HomePage() {
     fetchVitals({ showIndicator: true });
     const interval = setInterval(() => {
       fetchVitals();
-    }, 1000); // 缩短到 1s 轮询一次，配合后端 1s 缓存刷新
+    }, 2000); // 缩短到 2s 轮询一次，配合后端 2s 缓存刷新
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
@@ -491,11 +548,14 @@ export function HomePage() {
     unit: string,
     trend: MetricTrend,
     fractionDigits = 0,
-    showTrend = true
+    showTrend = true,
+    isStale = false   // true 表示当前显示的是"保持"的旧值（空白帧补偿）
   ) => {
     const hasValue = value !== null && !Number.isNaN(value);
     const arrow = !hasValue || showPlaceholder ? '—' : trend === 'up' ? '▲' : trend === 'down' ? '▼' : '—';
     const arrowColor = arrow === '▲' ? '#28a745' : arrow === '▼' ? '#dc3545' : 'rgba(0, 0, 0, 0.35)';
+    // 保持值用灰色显示，提示用户该数据非最新帧
+    const valueColor = isStale && hasValue ? 'rgba(0, 0, 0, 0.35)' : 'inherit';
 
     return (
       <div
@@ -510,6 +570,14 @@ export function HomePage() {
       >
         <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', marginBottom: '6px', fontWeight: 600 }}>
           {label}
+          {isStale && hasValue && (
+            <span
+              title="数据短暂缺失，显示最近一次有效值"
+              style={{ marginLeft: '4px', fontSize: '11px', color: 'rgba(0,0,0,0.35)', fontWeight: 400 }}
+            >
+              (保持)
+            </span>
+          )}
         </span>
         <span
           className="hp-metric-value"
@@ -520,6 +588,7 @@ export function HomePage() {
             fontSize: '32px',
             fontWeight: 800,
             marginBottom: '4px',
+            color: valueColor,
           }}
         >
           {(() => {
@@ -932,10 +1001,10 @@ export function HomePage() {
                           gap: '8px',
                         }}
                       >
-                        {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate)}
-                        {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate)}
-                        {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false)}
-                        {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false)}
+                        {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate, 0, true, !!device.staleFields.heartRate)}
+                        {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate, 0, true, !!device.staleFields.respirationRate)}
+                        {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false, !!device.staleFields.distanceMin)}
+                        {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false, !!device.staleFields.movementAmplitude)}
                       </div>
                     </div>
                   );
