@@ -1,8 +1,8 @@
-// pkg/api/influxdb_proxy.go
 package api
 
 import (
     "bytes"
+    "context"
     "encoding/csv"
     "encoding/json"
     "fmt"
@@ -14,23 +14,24 @@ import (
     "sync"
     "time"
 
-    contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
     "github.com/grafana/grafana/pkg/api/response"
+    "github.com/grafana/grafana/pkg/infra/db"
+    contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
     "github.com/grafana/grafana/pkg/web"
 )
 
 var (
-    influxURL        = getenv("INFLUXDB_URL", "https://influx.lanhc.com")
-    influxToken      = getenv("INFLUXDB_TOKEN", "kcF_lnBLOpnArrmmHytfGCeo5bGh5LQJb_d6wxyBZntWUbz-KyUv8UH_3huFP5Ac3SjOwX5KniuEmgpV_WUwYQ==")
-    influxOrg        = getenv("INFLUXDB_ORG", "ld6002h")
-    defaultBucket    = getenv("INFLUXDB_BUCKET", "vitals_data")
-    defaultDeviceID  = getenv("DEVICE_ID", "84F7035346E0")
+    influxURL         = getenv("INFLUXDB_URL", "https://influx.lanhc.com")
+    influxToken       = getenv("INFLUXDB_TOKEN", "kcF_lnBLOpnArrmmHytfGCeo5bGh5LQJb_d6wxyBZntWUbz-KyUv8UH_3huFP5Ac3SjOwX5KniuEmgpV_WUwYQ==")
+    influxOrg         = getenv("INFLUXDB_ORG", "ld6002h")
+    defaultBucket     = getenv("INFLUXDB_BUCKET", "vitals_data")
+    defaultDeviceID   = getenv("DEVICE_ID", "84F7035346E0")
+    fallbackDeviceIDs = []string{"B8F862F6BFD8", "84F7035346E0", "10B41DC081B2", "84F7035346E2"}
 )
 
-// 缓存结构体，用于后端主动查询缓存
 type CachedVitalsData struct {
     Results   []map[string]string `json:"results"`
-    Timestamp int64               `json:"timestamp"` // Unix 毫秒时间戳
+    Timestamp int64               `json:"timestamp"`
 }
 
 var (
@@ -39,8 +40,8 @@ var (
 )
 
 func getenv(key, fallback string) string {
-    if v := os.Getenv(key); v != "" {
-        return v
+    if value := os.Getenv(key); value != "" {
+        return value
     }
     return fallback
 }
@@ -48,7 +49,7 @@ func getenv(key, fallback string) string {
 type InfluxDBQueryRequest struct {
     Query    string `json:"query,omitempty"`
     Field    string `json:"field,omitempty"`
-    Mode     string `json:"mode,omitempty"` // tma2m / mean5m
+    Mode     string `json:"mode,omitempty"`
     Bucket   string `json:"bucket,omitempty"`
     DeviceID string `json:"deviceId,omitempty"`
 }
@@ -58,16 +59,13 @@ type InfluxDBQueryResponse struct {
     Error   string        `json:"error,omitempty"`
 }
 
-// InfluxDBQuery 处理 InfluxDB Flux 查询请求 - 返回缓存数据
 func (hs *HTTPServer) InfluxDBQuery(c *contextmodel.ReqContext) response.Response {
     var req InfluxDBQueryRequest
-    
     if err := web.Bind(c.Req, &req); err != nil {
         hs.log.Error("Failed to parse request", "error", err)
         return response.Error(http.StatusBadRequest, "Invalid request body", err)
     }
 
-    // 直接返回缓存数据，而不是每次都查询 InfluxDB
     vitalsCacheMutex.RLock()
     cachedData := vitalsCache
     vitalsCacheMutex.RUnlock()
@@ -81,7 +79,6 @@ func (hs *HTTPServer) InfluxDBQuery(c *contextmodel.ReqContext) response.Respons
     return response.JSON(http.StatusOK, map[string]any{"results": cachedData.Results, "timestamp": cachedData.Timestamp})
 }
 
-// 辅助函数
 func min(a, b int) int {
     if a < b {
         return a
@@ -90,9 +87,9 @@ func min(a, b int) int {
 }
 
 func firstNonEmpty(values ...string) string {
-    for _, v := range values {
-        if strings.TrimSpace(v) != "" {
-            return v
+    for _, value := range values {
+        if strings.TrimSpace(value) != "" {
+            return value
         }
     }
     return ""
@@ -145,69 +142,59 @@ func parseFluxCSV(body []byte) ([]map[string]string, error) {
             headers = record
             continue
         }
+
         row := make(map[string]string, len(headers))
-        for i, h := range headers {
-            if i < len(record) {
-                row[h] = record[i]
+        for index, header := range headers {
+            if index < len(record) {
+                row[header] = record[index]
             }
         }
         rows = append(rows, row)
     }
+
     return rows, nil
 }
 
-// ===== 固定时间段回放模式 =====
-// 一次性拉取 2026-03-07 19:00 ~ 19:05 的数据，按秒循环回放
-
 var (
-    // 固定时间段的全量数据（启动时从 InfluxDB 拉取一次）
     fixedPeriodData      []map[string]string
     fixedPeriodDataMutex sync.RWMutex
     fixedPeriodLoaded    bool
-
-    // 固定时间段起止（UTC+8）
-    fixedStart = time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)  // 19:00 CST = 11:00 UTC
-    fixedEnd   = time.Date(2026, 3, 7, 11, 5, 0, 0, time.UTC)  // 19:05 CST = 11:05 UTC
-    fixedDuration = fixedEnd.Sub(fixedStart) // 5 分钟
+    fixedStart           = time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)
+    fixedEnd             = time.Date(2026, 3, 7, 11, 5, 0, 0, time.UTC)
+    fixedDuration        = fixedEnd.Sub(fixedStart)
 )
 
-// 后端主动查询 InfluxDB 并更新缓存（后台运行）——固定时间段循环回放模式
 func (hs *HTTPServer) startVitalsCacheRefresh() {
     go func() {
-        // 第一步：一次性拉取固定时间段的全部数据
         hs.loadFixedPeriodData()
 
-        // 第二步：每秒按时间偏移从全量数据中取出对应时刻的数据，循环回放
-        ticker := time.NewTicker(1 * time.Second)
-        defer ticker.Stop()
+        replayTicker := time.NewTicker(1 * time.Second)
+        defer replayTicker.Stop()
+
+        reloadTicker := time.NewTicker(10 * time.Second)
+        defer reloadTicker.Stop()
 
         startPlayback := time.Now()
 
-        for range ticker.C {
-            hs.replayVitalsCache(startPlayback)
+        for {
+            select {
+            case <-replayTicker.C:
+                hs.replayVitalsCache(startPlayback)
+            case <-reloadTicker.C:
+                hs.loadFixedPeriodData()
+            }
         }
     }()
 }
 
-// loadFixedPeriodData 一次性从 InfluxDB 拉取固定 5 分钟的数据
 func (hs *HTTPServer) loadFixedPeriodData() {
-    devices := []string{
-        "B8F862F6BFD8",  // room 1
-        "84F7035346E0",  // room 2
-        "10B41DC081B2",  // room 3
-        "84F7035346E2",  // room 4
-    }
+    devices := hs.loadConfiguredDeviceIDs()
 
-    deviceFilter := strings.Join(
-        func() []string {
-            var filters []string
-            for _, d := range devices {
-                filters = append(filters, fmt.Sprintf(`r["device_id"] == "%s"`, d))
-            }
-            return filters
-        }(),
-        " or ",
-    )
+    filterParts := make([]string, 0, len(devices))
+    for _, deviceID := range devices {
+        filterParts = append(filterParts, fmt.Sprintf(`r["device_id"] == "%s"`, deviceID))
+    }
+    deviceFilter := strings.Join(filterParts, " or ")
 
     fluxQuery := fmt.Sprintf(`from(bucket: "%s")
   |> range(start: %s, stop: %s)
@@ -220,9 +207,7 @@ func (hs *HTTPServer) loadFixedPeriodData() {
         deviceFilter,
     )
 
-    hs.log.Info("Loading fixed period data from InfluxDB",
-        "start", fixedStart.Format(time.RFC3339),
-        "stop", fixedEnd.Format(time.RFC3339))
+    hs.log.Info("Loading fixed period data from InfluxDB", "devices", strings.Join(devices, ","), "start", fixedStart.Format(time.RFC3339), "stop", fixedEnd.Format(time.RFC3339))
 
     for retries := 0; retries < 5; retries++ {
         data, err := hs.executeInfluxQuery(fluxQuery)
@@ -244,7 +229,52 @@ func (hs *HTTPServer) loadFixedPeriodData() {
     hs.log.Error("Failed to load fixed period data after all retries")
 }
 
-// replayVitalsCache 根据当前墙钟时间计算在 5 分钟窗口内的偏移，取出对应秒的数据写入缓存
+type homePageCardDeviceRow struct {
+    DeviceMAC string `xorm:"device_mac"`
+}
+
+func (hs *HTTPServer) loadConfiguredDeviceIDs() []string {
+    devices := make([]string, 0)
+    seen := make(map[string]struct{})
+
+    appendDevice := func(deviceID string) {
+        deviceID = strings.TrimSpace(strings.ToUpper(deviceID))
+        if deviceID == "" {
+            return
+        }
+        if _, exists := seen[deviceID]; exists {
+            return
+        }
+        seen[deviceID] = struct{}{}
+        devices = append(devices, deviceID)
+    }
+
+    err := hs.SQLStore.WithDbSession(context.Background(), func(sess *db.Session) error {
+        var rows []homePageCardDeviceRow
+        if err := sess.SQL("SELECT DISTINCT device_mac FROM home_page_card WHERE device_mac IS NOT NULL AND device_mac <> ''").Find(&rows); err != nil {
+            return err
+        }
+
+        for _, row := range rows {
+            appendDevice(row.DeviceMAC)
+        }
+
+        return nil
+    })
+    if err != nil {
+        hs.log.Error("Failed to load home page card devices, using fallback list", "error", err)
+    }
+
+    if len(devices) == 0 {
+        for _, deviceID := range fallbackDeviceIDs {
+            appendDevice(deviceID)
+        }
+        appendDevice(defaultDeviceID)
+    }
+
+    return devices
+}
+
 func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
     fixedPeriodDataMutex.RLock()
     if !fixedPeriodLoaded || len(fixedPeriodData) == 0 {
@@ -254,34 +284,32 @@ func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
     allData := fixedPeriodData
     fixedPeriodDataMutex.RUnlock()
 
-    // 当前回放已经过去了多少时间，对 5 分钟取模，实现循环
     elapsed := time.Since(startPlayback)
-    offset := elapsed % fixedDuration // 0 ~ 5min 循环
+    offset := elapsed % fixedDuration
 
-    // 当前虚拟时间点
     virtualNow := fixedStart.Add(offset)
-    windowStart := virtualNow.Add(-5 * time.Second) // 取前 5 秒的数据窗口
+    windowStart := virtualNow.Add(-5 * time.Second)
 
-    // 从全量数据中筛选落在 [windowStart, virtualNow] 的记录
     var matched []map[string]string
     for _, row := range allData {
-        tStr, ok := row["_time"]
+        timeValue, ok := row["_time"]
         if !ok {
             continue
         }
-        t, err := time.Parse(time.RFC3339Nano, tStr)
+
+        parsedTime, err := time.Parse(time.RFC3339Nano, timeValue)
         if err != nil {
-            t, err = time.Parse(time.RFC3339, tStr)
+            parsedTime, err = time.Parse(time.RFC3339, timeValue)
             if err != nil {
                 continue
             }
         }
-        if (t.Equal(windowStart) || t.After(windowStart)) && (t.Equal(virtualNow) || t.Before(virtualNow)) {
+
+        if (parsedTime.Equal(windowStart) || parsedTime.After(windowStart)) && (parsedTime.Equal(virtualNow) || parsedTime.Before(virtualNow)) {
             matched = append(matched, row)
         }
     }
 
-    // 如果当前窗口没数据，取最近的一条（避免空白）
     if len(matched) == 0 {
         matched = findClosestRecords(allData, virtualNow)
     }
@@ -293,41 +321,40 @@ func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
     }
     vitalsCacheMutex.Unlock()
 
-    hs.log.Debug("Vitals cache replayed",
-        "virtualTime", virtualNow.Format(time.RFC3339),
-        "matchedRecords", len(matched),
-        "offset", offset.String())
+    hs.log.Debug("Vitals cache replayed", "virtualTime", virtualNow.Format(time.RFC3339), "matchedRecords", len(matched), "offset", offset.String())
 }
 
-// findClosestRecords 当窗口内无数据时，找到离 virtualNow 最近的每个 device+field 的记录
 func findClosestRecords(allData []map[string]string, virtualNow time.Time) []map[string]string {
     type key struct {
         deviceID string
         field    string
     }
+
     closest := make(map[key]map[string]string)
     closestDiff := make(map[key]time.Duration)
 
     for _, row := range allData {
-        tStr, ok := row["_time"]
+        timeValue, ok := row["_time"]
         if !ok {
             continue
         }
-        t, err := time.Parse(time.RFC3339Nano, tStr)
+
+        parsedTime, err := time.Parse(time.RFC3339Nano, timeValue)
         if err != nil {
-            t, err = time.Parse(time.RFC3339, tStr)
+            parsedTime, err = time.Parse(time.RFC3339, timeValue)
             if err != nil {
                 continue
             }
         }
-        k := key{deviceID: row["device_id"], field: row["_field"]}
-        diff := virtualNow.Sub(t)
+
+        pair := key{deviceID: row["device_id"], field: row["_field"]}
+        diff := virtualNow.Sub(parsedTime)
         if diff < 0 {
             diff = -diff
         }
-        if prev, exists := closestDiff[k]; !exists || diff < prev {
-            closestDiff[k] = diff
-            closest[k] = row
+        if previous, exists := closestDiff[pair]; !exists || diff < previous {
+            closestDiff[pair] = diff
+            closest[pair] = row
         }
     }
 
@@ -339,19 +366,16 @@ func findClosestRecords(allData []map[string]string, virtualNow time.Time) []map
 }
 
 func (hs *HTTPServer) executeInfluxQuery(fluxQuery string) ([]map[string]string, error) {
-    // 构建 InfluxDB 查询 URL
     queryURL, err := url.Parse(fmt.Sprintf("%s/api/v2/query", influxURL))
     if err != nil {
         return nil, err
     }
 
-    q := queryURL.Query()
-    q.Set("org", influxOrg)
-    queryURL.RawQuery = q.Encode()
+    values := queryURL.Query()
+    values.Set("org", influxOrg)
+    queryURL.RawQuery = values.Encode()
 
-    bodyBytes, err := json.Marshal(map[string]string{
-        "query": fluxQuery,
-    })
+    bodyBytes, err := json.Marshal(map[string]string{"query": fluxQuery})
     if err != nil {
         return nil, err
     }
