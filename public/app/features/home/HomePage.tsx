@@ -4,8 +4,12 @@ import { Box, Button } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
 
 interface DeviceConfig {
+  id?: number;
   room: string;
   deviceId: string;
+  deviceType?: string;
+  dashboardUid?: string;
+  dashboardUrl?: string;
   label?: string;
 }
 
@@ -81,6 +85,7 @@ const calculateTrends = (
 interface DeviceVitals extends DeviceMetrics {
   deviceId: string;
   room: string;
+  deviceType: string;
   occupied: boolean;
   fallRisk: boolean;
   trends: Record<MetricKey, MetricTrend>;
@@ -89,17 +94,43 @@ interface DeviceVitals extends DeviceMetrics {
 }
 
 type DashboardSummary = {
+  id: number;
   uid: string;
   title: string;
   url: string;
 };
+
+type HomePageCardDTO = {
+  id: number;
+  deviceMac: string;
+  deviceType?: string;
+  cardName: string;
+  dashboardUid?: string;
+  dashboardUrl?: string;
+};
+
+const DEFAULT_DEVICE_TYPE = 'heart-rate';
+
+const DEVICE_TYPE_OPTIONS = [
+  { value: 'heart-rate', label: '心率检测' },
+  { value: 'fall-detection', label: '跌倒检测' },
+];
+
+const DEVICE_TYPE_LABELS: Record<string, string> = {
+  'heart-rate': '心率检测',
+  'fall-detection': '跌倒检测',
+};
+
+const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
+
+const normalizeDeviceId = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
   // { room: '1', deviceId: 'D0CF1316DEC4' },
-  { room: '1', deviceId: 'B8F862F6BFD8'},
-  { room: '2', deviceId: '84F7035346E0'},
-  { room: '3', deviceId: '10B41DC081B2'},
-  { room: '4', deviceId: '84F7035346E2'},
+  { room: '1', deviceId: 'B8F862F6BFD8', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '2', deviceId: '84F7035346E0', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '3', deviceId: '10B41DC081B2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '4', deviceId: '84F7035346E2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
   // 在此添加更多设备配置
 ];
 
@@ -199,6 +230,7 @@ const createEmptyMetrics = (): DeviceMetrics => ({
 const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
   deviceId: config.deviceId,
   room: config.room,
+  deviceType: config.deviceType ?? DEFAULT_DEVICE_TYPE,
   ...createEmptyMetrics(),
   occupied: false,
   fallRisk: false,
@@ -207,6 +239,7 @@ const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
 });
 
 export function HomePage() {
+  const [deviceConfigs, setDeviceConfigs] = useState<DeviceConfig[]>(MONITORED_DEVICES);
   const [deviceVitals, setDeviceVitals] = useState<DeviceVitals[]>(
     MONITORED_DEVICES.map((config) => buildEmptyDeviceVitals(config))
   );
@@ -215,6 +248,11 @@ export function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState<DeviceConfig[]>([]);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isContactModalOpen, setContactModalOpen] = useState(false);
   const [isHelpModalOpen, setHelpModalOpen] = useState(false);
   const [isAlarmModalOpen, setAlarmModalOpen] = useState(false);
@@ -233,16 +271,22 @@ export function HomePage() {
 
   const showPlaceholder = !hasLoadedOnce && loading;
 
+  const dashboardByUid = useMemo(() => {
+    return new Map(dashboards.map((dashboard) => [dashboard.uid, dashboard]));
+  }, [dashboards]);
+
   const dashboardUrlByDevice = useMemo(() => {
     const map = new Map<string, string>();
-    MONITORED_DEVICES.forEach((config, index) => {
-      const summary = dashboards[index];
-      if (summary?.url) {
-        map.set(config.deviceId, summary.url);
+    deviceConfigs.forEach((config) => {
+      const summary = config.dashboardUid ? dashboardByUid.get(config.dashboardUid) : undefined;
+      const dashboardUrl = summary?.url ?? config.dashboardUrl;
+
+      if (dashboardUrl) {
+        map.set(config.deviceId, dashboardUrl);
       }
     });
     return map;
-  }, [dashboards]);
+  }, [dashboardByUid, deviceConfigs]);
 
   const sortedDeviceVitals = useMemo(() => {
     return [...deviceVitals].sort((a, b) => Number(b.fallRisk) - Number(a.fallRisk));
@@ -253,7 +297,7 @@ export function HomePage() {
       const searchResult = await getBackendSrv().get('/api/search', {
         type: 'dash-db',
         query: '*',
-        limit: MONITORED_DEVICES.length,
+        limit: 100,
       });
 
       const items = Array.isArray(searchResult)
@@ -274,6 +318,33 @@ export function HomePage() {
     }
   };
 
+  const fetchCardConfigs = async () => {
+    try {
+      const result = await getBackendSrv().get<HomePageCardDTO[]>('/api/home-page-cards');
+
+      if (!Array.isArray(result) || result.length === 0) {
+        setDeviceConfigs(MONITORED_DEVICES);
+        return;
+      }
+
+      const items = result
+        .filter((item) => item && typeof item.deviceMac === 'string' && typeof item.cardName === 'string')
+        .map((item) => ({
+          id: item.id,
+          room: String(item.cardName ?? '').trim(),
+          deviceId: normalizeDeviceId(String(item.deviceMac ?? '')),
+          deviceType: String(item.deviceType ?? DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
+          dashboardUid: String(item.dashboardUid ?? '').trim(),
+          dashboardUrl: String(item.dashboardUrl ?? '').trim(),
+        }));
+
+      setDeviceConfigs(items.length > 0 ? items : MONITORED_DEVICES);
+    } catch (err) {
+      console.error('Failed to fetch home page cards:', err);
+      setDeviceConfigs(MONITORED_DEVICES);
+    }
+  };
+
   const fetchVitals = useCallback(
     async (options?: { showIndicator?: boolean }) => {
       const shouldShowIndicator = options?.showIndicator ?? !hasLoadedOnce;
@@ -285,7 +356,7 @@ export function HomePage() {
       try {
         console.info('开始执行 HomePage.fetchVitals()');
 
-        const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, MONITORED_DEVICES);
+        const fluxQuery = buildFluxQuery(INFLUXDB_CONFIG.bucket, deviceConfigs);
         console.info('Flux 查询语句:', fluxQuery);
 
         const response = await getBackendSrv().post('/api/influxdb/query', {
@@ -305,7 +376,7 @@ export function HomePage() {
         const nextMetricsMap = new Map<string, DeviceMetrics>();
         const now = Date.now();
 
-        const updatedVitals: DeviceVitals[] = MONITORED_DEVICES.map((config) => {
+        const updatedVitals: DeviceVitals[] = deviceConfigs.map((config) => {
           const metricsWithRisk = groupedMetrics.get(config.deviceId) ?? {
             ...createEmptyMetrics(),
             fallRiskDetected: false,
@@ -360,6 +431,7 @@ export function HomePage() {
           return {
             deviceId: config.deviceId,
             room: config.room,
+            deviceType: config.deviceType ?? DEFAULT_DEVICE_TYPE,
             heartRate: metrics.heartRate,
             respirationRate: metrics.respirationRate,
             distanceMin: metrics.distanceMin,
@@ -385,12 +457,19 @@ export function HomePage() {
         }
       }
     },
-    [hasLoadedOnce]
+    [deviceConfigs, hasLoadedOnce]
   );
 
   useEffect(() => {
     fetchDashboards();
+    fetchCardConfigs();
   }, []);
+
+  useEffect(() => {
+    setDeviceVitals(deviceConfigs.map((config) => buildEmptyDeviceVitals(config)));
+    previousMetricsRef.current = new Map();
+    lastKnownMetricsRef.current = new Map();
+  }, [deviceConfigs]);
 
   useEffect(() => {
     fetchVitals({ showIndicator: true });
@@ -517,7 +596,7 @@ export function HomePage() {
         newRiskRooms.length > 0 &&
         (timeSinceLastAlarm > ALARM_COOLDOWN_MS || !isAlarmModalOpen)
       ) {
-        const displayNames = riskDevices.map((room) => `房间${room}`);
+        const displayNames = riskDevices.map((room) => formatRoomLabel(room));
         setAlarmDevices(displayNames);
         setAlarmModalOpen(true);
         playMultipleAlarmSounds(newRiskRooms);
@@ -525,7 +604,7 @@ export function HomePage() {
         riskDevices.forEach((room) => alarmingRoomsRef.current.add(room));
         setLastAlarmTime(now);
       } else if (isAlarmModalOpen && riskDevices.length > 0) {
-        const displayNames = riskDevices.map((room) => `房间${room}`);
+        const displayNames = riskDevices.map((room) => formatRoomLabel(room));
         setAlarmDevices(displayNames);
       }
     } else {
@@ -540,6 +619,96 @@ export function HomePage() {
 
   const handleManualRefresh = () => {
     fetchVitals({ showIndicator: true });
+  };
+
+  const openSettingsModal = () => {
+    setSettingsDraft(deviceConfigs.map((config) => ({ ...config })));
+    setSettingsError(null);
+    setSettingsNotice(null);
+    setSettingsModalOpen(true);
+  };
+
+  const addSettingsRow = () => {
+    setSettingsDraft((prev) => [
+      ...prev,
+      {
+        room: `${prev.length + 1}`,
+        deviceId: '',
+        deviceType: DEFAULT_DEVICE_TYPE,
+        dashboardUid: '',
+        dashboardUrl: '',
+      },
+    ]);
+  };
+
+  const updateSettingsRow = (index: number, patch: Partial<DeviceConfig>) => {
+    setSettingsDraft((prev) => prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+  };
+
+  const removeSettingsRow = (index: number) => {
+    setSettingsDraft((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const saveSettings = async () => {
+    const cleanedRows = settingsDraft.map((item) => ({
+      ...item,
+      room: item.room.trim(),
+      deviceId: normalizeDeviceId(item.deviceId),
+      deviceType: (item.deviceType ?? DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
+      dashboardUid: (item.dashboardUid ?? '').trim(),
+    }));
+
+    if (cleanedRows.length === 0) {
+      setSettingsError('Please keep at least one card.');
+      return;
+    }
+
+    if (cleanedRows.some((item) => !item.room || !item.deviceId)) {
+      setSettingsError('Please fill in card name and device MAC.');
+      return;
+    }
+
+    const uniqueDeviceIds = new Set(cleanedRows.map((item) => item.deviceId));
+    if (uniqueDeviceIds.size !== cleanedRows.length) {
+      setSettingsError('Device MAC must be unique.');
+      return;
+    }
+
+    setIsSavingSettings(true);
+    setSettingsError(null);
+
+    try {
+      const nextIds = new Set(cleanedRows.filter((item) => item.id != null).map((item) => item.id as number));
+      const deletedIds = deviceConfigs.filter((item) => item.id != null && !nextIds.has(item.id)).map((item) => item.id as number);
+
+      for (const id of deletedIds) {
+        await getBackendSrv().delete(`/api/home-page-cards/${id}`);
+      }
+
+      for (const item of cleanedRows) {
+        const payload = {
+          deviceMac: item.deviceId,
+          deviceType: item.deviceType,
+          cardName: item.room,
+          dashboardUid: item.dashboardUid,
+        };
+
+        if (item.id != null) {
+          await getBackendSrv().put(`/api/home-page-cards/${item.id}`, payload);
+        } else {
+          await getBackendSrv().post('/api/home-page-cards', payload);
+        }
+      }
+
+      await Promise.all([fetchDashboards(), fetchCardConfigs()]);
+      setSettingsNotice('Card settings saved.');
+      setSettingsModalOpen(false);
+    } catch (err) {
+      console.error('Failed to save home page card settings:', err);
+      setSettingsError(`Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setIsSavingSettings(false);
+    }
   };
 
   const renderMetric = (
@@ -811,6 +980,9 @@ export function HomePage() {
                 >
                   智能体平台
                 </Button>
+                <Button variant="secondary" onClick={openSettingsModal}>
+                  设置
+                </Button>
                 <Button variant="secondary" onClick={() => setHelpModalOpen(true)}>
                   帮助
                 </Button>
@@ -843,6 +1015,24 @@ export function HomePage() {
                   }}
                 >
                   {error}
+                </div>
+              )}
+
+              {settingsNotice && (
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: '1200px',
+                    padding: '16px',
+                    marginBottom: '24px',
+                    backgroundColor: 'rgba(40, 167, 69, 0.12)',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(40, 167, 69, 0.35)',
+                    color: '#1f6f43',
+                    fontSize: '14px',
+                  }}
+                >
+                  {settingsNotice}
                 </div>
               )}
 
@@ -932,9 +1122,12 @@ export function HomePage() {
                       }}
                     >
                       <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <span style={{ fontSize: '18px', fontWeight: 600 }}>房间 {device.room}</span>
+                        <span style={{ fontSize: '18px', fontWeight: 600 }}>{formatRoomLabel(device.room)}</span>
                         <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
                           设备 ID: {device.deviceId}
+                        </span>
+                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                          设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
                         </span>
                         {dashboardLink && (
                           <span style={{ fontSize: '12px', color: '#0066cc' }}>点击进入仪表板</span>
@@ -1063,6 +1256,170 @@ export function HomePage() {
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
                   <Button variant="secondary" onClick={closeAlarmModal}>
                     关闭警报
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isSettingsModalOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1350,
+              }}
+              onClick={() => {
+                if (!isSavingSettings) {
+                  setSettingsModalOpen(false);
+                }
+              }}
+            >
+              <div
+                className="hp-modal-content"
+                style={{
+                  backgroundColor: '#fff',
+                  padding: '24px',
+                  borderRadius: '8px',
+                  width: '92%',
+                  maxWidth: '860px',
+                  maxHeight: '85vh',
+                  overflowY: 'auto',
+                  boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
+                }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div>
+                    <h2 style={{ margin: 0, marginBottom: '8px' }}>首页卡片设置</h2>
+                    <p style={{ margin: 0, fontSize: '13px', color: 'rgba(0, 0, 0, 0.6)' }}>
+                      为每张首页卡片配置设备 MAC、设备类型和仪表板。
+                    </p>
+                  </div>
+                  <Button variant="secondary" onClick={addSettingsRow}>
+                    新增卡片
+                  </Button>
+                </div>
+
+                {settingsError && (
+                  <div
+                    style={{
+                      padding: '12px 14px',
+                      marginBottom: '16px',
+                      backgroundColor: '#fee',
+                      border: '1px solid #fcc',
+                      borderRadius: '4px',
+                      color: '#c33',
+                      fontSize: '13px',
+                    }}
+                  >
+                    {settingsError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {settingsDraft.map((item, index) => (
+                    <div
+                      key={item.id ?? `${item.deviceId}-${index}`}
+                      style={{
+                        border: '1px solid rgba(0, 0, 0, 0.1)',
+                        borderRadius: '6px',
+                        padding: '16px',
+                        backgroundColor: 'rgba(0, 0, 0, 0.015)',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                          gap: '12px',
+                          alignItems: 'end',
+                        }}
+                      >
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <span>Card name</span>
+                          <input
+                            value={item.room}
+                            onChange={(event) => updateSettingsRow(index, { room: event.target.value })}
+                            placeholder="e.g. Room 2"
+                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                          />
+                        </label>
+
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <span>Device MAC</span>
+                          <input
+                            value={item.deviceId}
+                            onChange={(event) => updateSettingsRow(index, { deviceId: event.target.value })}
+                            placeholder="e.g. B8:F8:62:F6:BF:D8"
+                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                          />
+                        </label>
+
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <span>Device type</span>
+                          <select
+                            value={item.deviceType ?? DEFAULT_DEVICE_TYPE}
+                            onChange={(event) => updateSettingsRow(index, { deviceType: event.target.value })}
+                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                          >
+                            {DEVICE_TYPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <span>Dashboard</span>
+                          <select
+                            value={item.dashboardUid ?? ''}
+                            onChange={(event) => {
+                              const dashboard = dashboardByUid.get(event.target.value);
+                              updateSettingsRow(index, {
+                                dashboardUid: event.target.value,
+                                dashboardUrl: dashboard?.url ?? '',
+                              });
+                            }}
+                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                          >
+                            <option value="">Unbound</option>
+                            {dashboards.map((dashboard) => (
+                              <option key={dashboard.uid} value={dashboard.uid}>
+                                {dashboard.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', gap: '12px' }}>
+                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                          Current dashboard UID: {item.dashboardUid || 'Unbound'}
+                        </span>
+                        <Button variant="destructive" size="sm" onClick={() => removeSettingsRow(index)}>
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setSettingsModalOpen(false)}
+                    disabled={isSavingSettings}
+                  >
+                    Cancel
+                  </Button>
+                  <Button variant="primary" onClick={saveSettings} disabled={isSavingSettings}>
+                    {isSavingSettings ? 'Saving...' : 'Save settings'}
                   </Button>
                 </div>
               </div>
