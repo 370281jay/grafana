@@ -34,12 +34,10 @@ func (hs *HTTPServer) listHomePageCards(c *contextmodel.ReqContext) response.Res
 }
 
 func (hs *HTTPServer) createHomePageCard(c *contextmodel.ReqContext) response.Response {
-	cmd := &homepagecards.CreateHomePageCardCommand{}
+	cmd := &homepagecards.CreateHomePageCardCommand{OrgID: c.OrgID}
 	if err := web.Bind(c.Req, cmd); err != nil {
 		return response.Error(http.StatusBadRequest, "Invalid request body", err)
 	}
-
-	cmd.OrgID = c.OrgID
 
 	card, err := hs.homePageCardService.Create(c.Req.Context(), cmd)
 	if err != nil {
@@ -61,7 +59,6 @@ func (hs *HTTPServer) updateHomePageCard(c *contextmodel.ReqContext) response.Re
 	}
 
 	cmd.ID = id
-	cmd.OrgID = c.OrgID
 
 	card, err := hs.homePageCardService.Update(c.Req.Context(), cmd)
 	if err != nil {
@@ -88,6 +85,7 @@ func (hs *HTTPServer) deleteHomePageCard(c *contextmodel.ReqContext) response.Re
 type homePageCardDTO struct {
 	ID           int64  `json:"id"`
 	DeviceMAC    string `json:"deviceMac"`
+	DeviceType   string `json:"deviceType"`
 	CardName     string `json:"cardName"`
 	DashboardUID string `json:"dashboardUid"`
 	DashboardURL string `json:"dashboardUrl"`
@@ -105,6 +103,7 @@ func toHomePageCardDTO(card *homepagecards.HomePageCard) homePageCardDTO {
 	dto := homePageCardDTO{
 		ID:           card.ID,
 		DeviceMAC:    card.DeviceMAC,
+		DeviceType:   card.DeviceType,
 		CardName:     card.CardName,
 		DashboardUID: card.DashboardUID,
 	}

@@ -15,6 +15,7 @@ type HomePageCard struct {
 	ID           int64     `json:"id" xorm:"pk autoincr 'id'" db:"id"`
 	OrgID        int64     `json:"orgId" xorm:"org_id" db:"org_id"`
 	DeviceMAC    string    `json:"deviceMac" xorm:"device_mac" db:"device_mac"`
+	DeviceType   string    `json:"deviceType" xorm:"device_type" db:"device_type"`
 	CardName     string    `json:"cardName" xorm:"card_name" db:"card_name"`
 	DashboardUID string    `json:"dashboardUid" xorm:"dashboard_uid" db:"dashboard_uid"`
 	Created      time.Time `json:"created" xorm:"created" db:"created"`
@@ -24,12 +25,14 @@ type HomePageCard struct {
 type CreateHomePageCardCommand struct {
 	OrgID        int64  `json:"orgId" xorm:"org_id"`
 	DeviceMAC    string `json:"deviceMac" xorm:"device_mac"`
+	DeviceType   string `json:"deviceType" xorm:"device_type"`
 	CardName     string `json:"cardName" xorm:"card_name"`
 	DashboardUID string `json:"dashboardUid" xorm:"dashboard_uid"`
 }
 
 func (cmd *CreateHomePageCardCommand) Validate() error {
 	cmd.DeviceMAC = NormalizeMAC(cmd.DeviceMAC)
+	cmd.DeviceType = strings.TrimSpace(cmd.DeviceType)
 	cmd.CardName = strings.TrimSpace(cmd.CardName)
 	cmd.DashboardUID = strings.TrimSpace(cmd.DashboardUID)
 
@@ -44,12 +47,14 @@ type UpdateHomePageCardCommand struct {
 	ID           int64  `json:"-"`
 	OrgID        int64  `json:"orgId" xorm:"org_id"`
 	DeviceMAC    string `json:"deviceMac" xorm:"device_mac"`
+	DeviceType   string `json:"deviceType" xorm:"device_type"`
 	CardName     string `json:"cardName" xorm:"card_name"`
 	DashboardUID string `json:"dashboardUid" xorm:"dashboard_uid"`
 }
 
 func (cmd *UpdateHomePageCardCommand) Validate() error {
 	cmd.DeviceMAC = NormalizeMAC(cmd.DeviceMAC)
+	cmd.DeviceType = strings.TrimSpace(cmd.DeviceType)
 	cmd.CardName = strings.TrimSpace(cmd.CardName)
 	cmd.DashboardUID = strings.TrimSpace(cmd.DashboardUID)
 

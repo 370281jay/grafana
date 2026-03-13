@@ -25,4 +25,7 @@ func addHomePageCardMigrations(mg *Migrator) {
 	mg.AddMigration("create home_page_card table v1", NewAddTableMigration(homePageCardV1))
 	mg.AddMigration("add unique index home_page_card.org_id_device_mac", NewAddIndexMigration(homePageCardV1, homePageCardV1.Indices[0]))
 	mg.AddMigration("add index home_page_card.org_id", NewAddIndexMigration(homePageCardV1, homePageCardV1.Indices[1]))
+	mg.AddMigration("add column device_type in home_page_card", NewAddColumnMigration(homePageCardV1, &Column{
+		Name: "device_type", Type: DB_NVarchar, Length: 64, Nullable: true,
+	}))
 }

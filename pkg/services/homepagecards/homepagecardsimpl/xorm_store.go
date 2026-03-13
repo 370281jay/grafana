@@ -27,6 +27,7 @@ func (s *sqlStore) Create(ctx context.Context, cmd *homepagecards.CreateHomePage
 	entity := &homepagecards.HomePageCard{
 		OrgID:        cmd.OrgID,
 		DeviceMAC:    cmd.DeviceMAC,
+		DeviceType:   cmd.DeviceType,
 		CardName:     cmd.CardName,
 		DashboardUID: cmd.DashboardUID,
 	}
@@ -54,6 +55,7 @@ func (s *sqlStore) Update(ctx context.Context, cmd *homepagecards.UpdateHomePage
 		}
 
 		entity.DeviceMAC = cmd.DeviceMAC
+		entity.DeviceType = cmd.DeviceType
 		entity.CardName = cmd.CardName
 		entity.DashboardUID = cmd.DashboardUID
 
