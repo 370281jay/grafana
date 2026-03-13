@@ -91,6 +91,9 @@ interface DeviceVitals extends DeviceMetrics {
   trends: Record<MetricKey, MetricTrend>;
   // 标记哪些字段当前是"保持显示"的旧值（空白帧时不清零）
   staleFields: Partial<Record<MetricKey, boolean>>;
+  fallDetected: boolean;
+  fallTimerSeconds: number | null;
+  humanPresence: boolean | null;
 }
 
 type DashboardSummary = {
@@ -120,6 +123,8 @@ const DEVICE_TYPE_LABELS: Record<string, string> = {
   'heart-rate': '心率检测',
   'fall-detection': '跌倒检测',
 };
+
+type DeviceFilterValue = 'all' | 'heart-rate' | 'fall-detection';
 
 const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
 
@@ -155,18 +160,31 @@ const formatMetric = (value: number | null, fractionDigits = 0): string => {
   return value.toFixed(fractionDigits);
 };
 
+const formatFallTimer = (value: number | null): string => {
+  if (value === null || Number.isNaN(value)) {
+    return '-';
+  }
+  const seconds = Math.max(0, Math.floor(value));
+  const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
+  const ss = String(seconds % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+};
+
 // 仿照 Python 脚本中的 Flux 查询语句
 const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
   const deviceFilter = buildDeviceFilter(devices);
   return `from(bucket: "${bucket}")
   |> range(start: -3s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
-  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
+  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human")
   |> filter(fn: (r) => ${deviceFilter})`;
 };
 
 type DeviceMetricsWithRisk = DeviceMetrics & {
   fallRiskDetected: boolean;
+  fallFlag?: number | null;
+  fallCount?: number | null;
+  humanPresence?: number | null;
 };
 
 const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk> => {
@@ -190,6 +208,9 @@ const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk>
     const metrics = grouped.get(deviceId) ?? {
       ...createEmptyMetrics(),
       fallRiskDetected: false,
+      fallFlag: null,
+      fallCount: null,
+      humanPresence: null,
     };
 
     // ✅ 检查体动值是否 > 900
@@ -209,6 +230,18 @@ const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk>
         break;
       case 'movement_amplitude':
         metrics.movementAmplitude = numericValue;
+        break;
+      case 'fall':
+        metrics.fallFlag = numericValue;
+        if (numericValue >= 0.5) {
+          metrics.fallRiskDetected = true;
+        }
+        break;
+      case 'fall_count':
+        metrics.fallCount = numericValue;
+        break;
+      case 'human':
+        metrics.humanPresence = numericValue;
         break;
       default:
         break;
@@ -236,12 +269,15 @@ const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
   fallRisk: false,
   trends: createEmptyTrends(),
   staleFields: {},
+  fallDetected: false,
+  fallTimerSeconds: null,
+  humanPresence: null,
 });
 
 export function HomePage() {
   const [deviceConfigs, setDeviceConfigs] = useState<DeviceConfig[]>(MONITORED_DEVICES);
   const [deviceVitals, setDeviceVitals] = useState<DeviceVitals[]>(
-    MONITORED_DEVICES.map((config) => buildEmptyDeviceVitals(config))
+    MONITORED_DEVICES.map((config: DeviceConfig) => buildEmptyDeviceVitals(config))
   );
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
@@ -260,6 +296,7 @@ export function HomePage() {
   const [lastAlarmTime, setLastAlarmTime] = useState<number>(0);
   const ACK_COOLDOWN_MS = 60000; // 1 分钟
   const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Map<string, number>>(new Map()); // ✅ 添加
+  const [activeDeviceFilter, setActiveDeviceFilter] = useState<DeviceFilterValue>('all');
   const alarmingRoomsRef = useRef<Set<string>>(new Set());
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
@@ -270,14 +307,22 @@ export function HomePage() {
   const alarmTimeoutRef = useRef<number | null>(null); // ✅ 添加
 
   const showPlaceholder = !hasLoadedOnce && loading;
+  const deviceFilterOptions: Array<{ value: DeviceFilterValue; label: string }> = useMemo(
+    () => [
+      { value: 'all', label: '全部设备' },
+      { value: 'heart-rate', label: '心率检测' },
+      { value: 'fall-detection', label: '跌倒检测' },
+    ],
+    []
+  );
 
   const dashboardByUid = useMemo(() => {
-    return new Map(dashboards.map((dashboard) => [dashboard.uid, dashboard]));
+    return new Map(dashboards.map((dashboard: DashboardSummary) => [dashboard.uid, dashboard]));
   }, [dashboards]);
 
   const dashboardUrlByDevice = useMemo(() => {
     const map = new Map<string, string>();
-    deviceConfigs.forEach((config) => {
+    deviceConfigs.forEach((config: DeviceConfig) => {
       const summary = config.dashboardUid ? dashboardByUid.get(config.dashboardUid) : undefined;
       const dashboardUrl = summary?.url ?? config.dashboardUrl;
 
@@ -291,6 +336,13 @@ export function HomePage() {
   const sortedDeviceVitals = useMemo(() => {
     return [...deviceVitals].sort((a, b) => Number(b.fallRisk) - Number(a.fallRisk));
   }, [deviceVitals]);
+
+  const filteredDeviceVitals = useMemo(() => {
+    if (activeDeviceFilter === 'all') {
+      return sortedDeviceVitals;
+    }
+    return sortedDeviceVitals.filter((item: DeviceVitals) => item.deviceType === activeDeviceFilter);
+  }, [activeDeviceFilter, sortedDeviceVitals]);
 
   const fetchDashboards = async () => {
     try {
@@ -376,14 +428,23 @@ export function HomePage() {
         const nextMetricsMap = new Map<string, DeviceMetrics>();
         const now = Date.now();
 
-        const updatedVitals: DeviceVitals[] = deviceConfigs.map((config) => {
+  const updatedVitals: DeviceVitals[] = deviceConfigs.map((config: DeviceConfig) => {
           const metricsWithRisk = groupedMetrics.get(config.deviceId) ?? {
             ...createEmptyMetrics(),
             fallRiskDetected: false,
+            fallFlag: null,
+            fallCount: null,
+            humanPresence: null,
           };
 
           // 分离风险标志
-          const { fallRiskDetected, ...rawMetrics } = metricsWithRisk;
+          const {
+            fallRiskDetected,
+            fallFlag = null,
+            fallCount = null,
+            humanPresence = null,
+            ...rawMetrics
+          } = metricsWithRisk;
 
           // ——— 空白帧保持策略 ———
           // 对 heartRate / respirationRate 做"最后有效值"填充：
@@ -422,16 +483,22 @@ export function HomePage() {
           nextMetricsMap.set(config.deviceId, metrics);
           const trends = calculateTrends(previousMetrics.get(config.deviceId), metrics);
 
-          // 使用查询中检测到的风险标志
-          const fallRisk = fallRiskDetected;
+          const deviceType = config.deviceType ?? DEFAULT_DEVICE_TYPE;
+          const isFallDevice = deviceType === 'fall-detection';
+          const fallDetected = isFallDevice ? fallFlag !== null && fallFlag >= 0.5 : fallRiskDetected;
+          const fallTimerSeconds = isFallDevice ? fallCount ?? null : null;
+          const humanPresenceValue = humanPresence == null ? null : humanPresence >= 0.5;
 
-          const occupied =
-            metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
+          const fallRisk = isFallDevice ? fallDetected : fallRiskDetected;
+
+          const occupied = isFallDevice
+            ? humanPresenceValue ?? false
+            : metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
           return {
             deviceId: config.deviceId,
             room: config.room,
-            deviceType: config.deviceType ?? DEFAULT_DEVICE_TYPE,
+            deviceType,
             heartRate: metrics.heartRate,
             respirationRate: metrics.respirationRate,
             distanceMin: metrics.distanceMin,
@@ -440,6 +507,9 @@ export function HomePage() {
             fallRisk,
             trends,
             staleFields,
+            fallDetected,
+            fallTimerSeconds,
+            humanPresence: isFallDevice ? humanPresenceValue : null,
           };
         });
 
@@ -466,7 +536,7 @@ export function HomePage() {
   }, []);
 
   useEffect(() => {
-    setDeviceVitals(deviceConfigs.map((config) => buildEmptyDeviceVitals(config)));
+  setDeviceVitals(deviceConfigs.map((config: DeviceConfig) => buildEmptyDeviceVitals(config)));
     previousMetricsRef.current = new Map();
     lastKnownMetricsRef.current = new Map();
   }, [deviceConfigs]);
@@ -558,9 +628,9 @@ export function HomePage() {
 
   const closeAlarmModal = useCallback(() => {
     const now = Date.now();
-    const currentRooms = new Set(alarmingRoomsRef.current);
-    setAcknowledgedRiskRooms((prev) => {
-      const next = new Map(prev);
+  const currentRooms: Set<string> = new Set(alarmingRoomsRef.current);
+    setAcknowledgedRiskRooms((prev: Map<string, number>) => {
+      const next = new Map<string, number>(prev);
       currentRooms.forEach((room) => {
         next.set(room, now);
       });
@@ -577,15 +647,15 @@ export function HomePage() {
   // 监听风险状态变化
   useEffect(() => {
     const riskDevices = deviceVitals
-      .filter((device) => device.fallRisk)
-      .map((device) => device.room);
+      .filter((device: DeviceVitals) => device.fallRisk)
+      .map((device: DeviceVitals) => device.room);
 
     if (riskDevices.length > 0) {
       const now = Date.now();
       const timeSinceLastAlarm = now - lastAlarmTime;
       const ALARM_COOLDOWN_MS = 10000;
 
-      const newRiskRooms = riskDevices.filter((room) => {
+  const newRiskRooms = riskDevices.filter((room: string) => {
         const lastAck = acknowledgedRiskRooms.get(room);
         const ackExpired = !lastAck || now - lastAck >= ACK_COOLDOWN_MS;
         return ackExpired && !alarmingRoomsRef.current.has(room);
@@ -596,21 +666,23 @@ export function HomePage() {
         newRiskRooms.length > 0 &&
         (timeSinceLastAlarm > ALARM_COOLDOWN_MS || !isAlarmModalOpen)
       ) {
-        const displayNames = riskDevices.map((room) => formatRoomLabel(room));
+  const displayNames = riskDevices.map((room: string) => formatRoomLabel(room));
         setAlarmDevices(displayNames);
         setAlarmModalOpen(true);
         playMultipleAlarmSounds(newRiskRooms);
 
-        riskDevices.forEach((room) => alarmingRoomsRef.current.add(room));
+  riskDevices.forEach((room: string) => alarmingRoomsRef.current.add(room));
         setLastAlarmTime(now);
       } else if (isAlarmModalOpen && riskDevices.length > 0) {
-        const displayNames = riskDevices.map((room) => formatRoomLabel(room));
+  const displayNames = riskDevices.map((room: string) => formatRoomLabel(room));
         setAlarmDevices(displayNames);
       }
     } else {
       // 所有房间都恢复正常
       alarmingRoomsRef.current.clear();
-      setAcknowledgedRiskRooms((prev) => (prev.size === 0 ? prev : new Map()));
+      setAcknowledgedRiskRooms((prev: Map<string, number>) =>
+        prev.size === 0 ? prev : new Map<string, number>()
+      );
       setAlarmModalOpen(false);
       stopAlarmSound();
       setAlarmDevices([]);
@@ -622,14 +694,14 @@ export function HomePage() {
   };
 
   const openSettingsModal = () => {
-    setSettingsDraft(deviceConfigs.map((config) => ({ ...config })));
+  setSettingsDraft(deviceConfigs.map((config: DeviceConfig) => ({ ...config })));
     setSettingsError(null);
     setSettingsNotice(null);
     setSettingsModalOpen(true);
   };
 
   const addSettingsRow = () => {
-    setSettingsDraft((prev) => [
+    setSettingsDraft((prev: DeviceConfig[]) => [
       ...prev,
       {
         room: `${prev.length + 1}`,
@@ -642,15 +714,17 @@ export function HomePage() {
   };
 
   const updateSettingsRow = (index: number, patch: Partial<DeviceConfig>) => {
-    setSettingsDraft((prev) => prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+    setSettingsDraft((prev: DeviceConfig[]) =>
+      prev.map((item: DeviceConfig, itemIndex: number) => (itemIndex === index ? { ...item, ...patch } : item))
+    );
   };
 
   const removeSettingsRow = (index: number) => {
-    setSettingsDraft((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  setSettingsDraft((prev: DeviceConfig[]) => prev.filter((_, itemIndex: number) => itemIndex !== index));
   };
 
   const saveSettings = async () => {
-    const cleanedRows = settingsDraft.map((item) => ({
+    const cleanedRows = settingsDraft.map((item: DeviceConfig) => ({
       ...item,
       room: item.room.trim(),
       deviceId: normalizeDeviceId(item.deviceId),
@@ -663,12 +737,12 @@ export function HomePage() {
       return;
     }
 
-    if (cleanedRows.some((item) => !item.room || !item.deviceId)) {
+    if (cleanedRows.some((item: DeviceConfig) => !item.room || !item.deviceId)) {
       setSettingsError('Please fill in card name and device MAC.');
       return;
     }
 
-    const uniqueDeviceIds = new Set(cleanedRows.map((item) => item.deviceId));
+    const uniqueDeviceIds = new Set(cleanedRows.map((item: DeviceConfig) => item.deviceId));
     if (uniqueDeviceIds.size !== cleanedRows.length) {
       setSettingsError('Device MAC must be unique.');
       return;
@@ -678,8 +752,12 @@ export function HomePage() {
     setSettingsError(null);
 
     try {
-      const nextIds = new Set(cleanedRows.filter((item) => item.id != null).map((item) => item.id as number));
-      const deletedIds = deviceConfigs.filter((item) => item.id != null && !nextIds.has(item.id)).map((item) => item.id as number);
+      const nextIds = new Set<number>(
+        cleanedRows.filter((item: DeviceConfig) => item.id != null).map((item: DeviceConfig) => item.id as number)
+      );
+      const deletedIds = deviceConfigs
+        .filter((item: DeviceConfig) => item.id != null && !nextIds.has(item.id as number))
+        .map((item: DeviceConfig) => item.id as number);
 
       for (const id of deletedIds) {
         await getBackendSrv().delete(`/api/home-page-cards/${id}`);
@@ -769,6 +847,112 @@ export function HomePage() {
           {showTrend && <span style={{ fontSize: '18px', color: arrowColor }}>{arrow}</span>}
         </span>
         <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.5)' }}>{unit}</span>
+      </div>
+    );
+  };
+
+  const renderCardHeader = (device: DeviceVitals, dashboardLink: string | null) => (
+    <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <span style={{ fontSize: '18px', fontWeight: 600 }}>{formatRoomLabel(device.room)}</span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备 ID: {device.deviceId}</span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+        设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
+      </span>
+      {dashboardLink && <span style={{ fontSize: '12px', color: '#0066cc' }}>点击进入仪表板</span>}
+    </div>
+  );
+
+  const renderFallDetectionCard = (device: DeviceVitals, dashboardLink: string | null) => {
+    const fallStatus = device.fallDetected ? '检测到跌倒' : '正常';
+    const fallStatusColor = device.fallDetected ? '#d63342' : '#1f6f43';
+    const fallTimerText = formatFallTimer(device.fallTimerSeconds);
+    const humanStatus = device.humanPresence == null ? '-' : device.humanPresence ? '有人' : '无人';
+
+    const cardBackgroundColor = device.fallDetected ? 'rgba(220, 53, 69, 0.15)' : 'rgba(0, 0, 0, 0.02)';
+    const cardBorderColor = device.fallDetected ? 'rgba(220, 53, 69, 0.4)' : 'rgba(0, 0, 0, 0.08)';
+
+    return (
+      <div
+        key={device.deviceId}
+        className="hp-card hp-card-fall"
+        onClick={() => {
+          if (dashboardLink) {
+            window.location.assign(dashboardLink);
+          }
+        }}
+        style={{
+          padding: '12px',
+          backgroundColor: cardBackgroundColor,
+          borderRadius: '6px',
+          border: `1px solid ${cardBorderColor}`,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+          cursor: dashboardLink ? 'pointer' : 'default',
+          boxShadow: device.fallDetected ? '0 0 12px rgba(214, 51, 66, 0.35)' : undefined,
+        }}
+      >
+        {renderCardHeader(device, dashboardLink)}
+        <div
+          className="hp-fall-status"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: '8px',
+          }}
+        >
+          <div
+            style={{
+              padding: '10px',
+              borderRadius: '4px',
+              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>跌倒状态</span>
+            <span style={{ fontSize: '20px', fontWeight: 700, color: fallStatusColor }}>{fallStatus}</span>
+          </div>
+          <div
+            style={{
+              padding: '10px',
+              borderRadius: '4px',
+              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>跌倒计时</span>
+            <span style={{ fontSize: '20px', fontWeight: 700 }}>{fallTimerText}</span>
+          </div>
+          <div
+            style={{
+              padding: '10px',
+              borderRadius: '4px',
+              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>有人状态</span>
+            <span style={{ fontSize: '20px', fontWeight: 700 }}>{showPlaceholder ? '-' : humanStatus}</span>
+          </div>
+        </div>
+
+        <div
+          className="hp-metrics-grid"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: '8px',
+          }}
+        >
+          {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false, !!device.staleFields.distanceMin)}
+          {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false, !!device.staleFields.movementAmplitude)}
+        </div>
       </div>
     );
   };
@@ -1075,6 +1259,30 @@ export function HomePage() {
                 )}
               </div>
 
+              {/* 设备类型过滤 */}
+              <div
+                className="hp-device-filter"
+                style={{
+                  width: '100%',
+                  maxWidth: '1200px',
+                  display: 'flex',
+                  gap: '8px',
+                  justifyContent: 'flex-end',
+                  marginBottom: '12px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                {deviceFilterOptions.map((option) => (
+                  <Button
+                    key={option.value}
+                    variant={activeDeviceFilter === option.value ? 'primary' : 'secondary'}
+                    onClick={() => setActiveDeviceFilter(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+
               {/* 健康数据面板 */}
               <div
                 className="hp-card-grid"
@@ -1087,8 +1295,12 @@ export function HomePage() {
                   marginBottom: '24px',
                 }}
               >
-                {sortedDeviceVitals.map((device) => {
+                {filteredDeviceVitals.map((device: DeviceVitals) => {
                   const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
+
+                  if (device.deviceType === 'fall-detection') {
+                    return renderFallDetectionCard(device, dashboardLink);
+                  }
 
                   let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)';
                   let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
@@ -1096,7 +1308,7 @@ export function HomePage() {
                   if (device.fallRisk) {
                     cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
                     cardBorderColor = 'rgba(220, 53, 69, 0.4)';
-                  } else if (device.heartRate) {
+                  } else if (device.occupied) {
                     cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
                     cardBorderColor = 'rgba(40, 167, 69, 0.5)';
                   }
@@ -1121,18 +1333,7 @@ export function HomePage() {
                         cursor: dashboardLink ? 'pointer' : 'default',
                       }}
                     >
-                      <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <span style={{ fontSize: '18px', fontWeight: 600 }}>{formatRoomLabel(device.room)}</span>
-                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
-                          设备 ID: {device.deviceId}
-                        </span>
-                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
-                          设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
-                        </span>
-                        {dashboardLink && (
-                          <span style={{ fontSize: '12px', color: '#0066cc' }}>点击进入仪表板</span>
-                        )}
-                      </div>
+                      {renderCardHeader(device, dashboardLink)}
 
                       {/* 有人状态 / 摔倒风险 */}
                       <div
@@ -1157,7 +1358,7 @@ export function HomePage() {
                             有人状态
                           </span>
                           <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                            {showPlaceholder ? '-' : device.heartRate ? '有人' : '无人'}
+                            {showPlaceholder ? '-' : device.occupied ? '有人' : '无人'}
                           </span>
                         </div>
                         <div

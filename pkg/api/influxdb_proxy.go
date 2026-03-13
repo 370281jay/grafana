@@ -196,11 +196,11 @@ func (hs *HTTPServer) loadFixedPeriodData() {
     }
     deviceFilter := strings.Join(filterParts, " or ")
 
-    fluxQuery := fmt.Sprintf(`from(bucket: "%s")
-  |> range(start: %s, stop: %s)
-  |> filter(fn: (r) => r["_measurement"] == "device_data")
-  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm")
-  |> filter(fn: (r) => %s)`,
+        fluxQuery := fmt.Sprintf(`from(bucket: "%s")
+    |> range(start: %s, stop: %s)
+    |> filter(fn: (r) => r["_measurement"] == "device_data")
+    |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human")
+    |> filter(fn: (r) => %s)`,
         defaultBucket,
         fixedStart.Format(time.RFC3339),
         fixedEnd.Format(time.RFC3339),
