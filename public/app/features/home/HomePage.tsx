@@ -942,17 +942,7 @@ export function HomePage() {
           </div>
         </div>
 
-        <div
-          className="hp-metrics-grid"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-            gap: '8px',
-          }}
-        >
-          {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false, !!device.staleFields.distanceMin)}
-          {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false, !!device.staleFields.movementAmplitude)}
-        </div>
+        {/* 跌倒卡片仅显示：有人 / 跌倒 / 跌倒计时（不显示心率/呼吸等） */}
       </div>
     );
   };
