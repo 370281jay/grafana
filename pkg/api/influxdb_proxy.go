@@ -159,8 +159,8 @@ var (
     fixedPeriodData      []map[string]string
     fixedPeriodDataMutex sync.RWMutex
     fixedPeriodLoaded    bool
-    fixedStart           = time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)
-    fixedEnd             = time.Date(2026, 3, 7, 11, 5, 0, 0, time.UTC)
+    fixedStart           = time.Date(2026, 3, 13, 9, 0, 0, 0, time.UTC)
+    fixedEnd             = time.Date(2026, 3, 13, 9, 5, 0, 0, time.UTC)
     fixedDuration        = fixedEnd.Sub(fixedStart)
 )
 

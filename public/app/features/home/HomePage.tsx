@@ -6,6 +6,7 @@ import {
   useCallback,
   useRef,
   type MouseEvent as ReactMouseEvent,
+  type CSSProperties,
 } from 'react';
 
 import { Box, Button } from '@grafana/ui';
@@ -177,6 +178,18 @@ type DeviceFilterValue = 'all' | 'heart-rate' | 'fall-detection';
 const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
 
 const normalizeDeviceMac = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
+const dropdownStyle: CSSProperties = {
+  width: '100%',
+  minHeight: '36px',
+  padding: '8px 10px',
+  borderRadius: '4px',
+  border: '1px solid rgba(0, 0, 0, 0.2)',
+  backgroundColor: '#fff',
+  color: 'rgba(0, 0, 0, 0.85)',
+  fontSize: '13px',
+  lineHeight: '1.35',
+  appearance: 'none',
+};
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
   // { room: '1', deviceId: 'D0CF1316DEC4' },
@@ -1809,102 +1822,120 @@ export function HomePage() {
                 )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {settingsDraft.map((item, index) => (
-                    <div
-                      key={item.id ?? `${item.deviceId ?? 'new'}-${item.deviceMac || index}`}
-                      style={{
-                        border: '1px solid rgba(0, 0, 0, 0.1)',
-                        borderRadius: '6px',
-                        padding: '16px',
-                        backgroundColor: 'rgba(0, 0, 0, 0.015)',
-                      }}
-                    >
+                  {settingsDraft.map((item, index) => {
+                    const deviceSelectValue = item.deviceId != null ? String(item.deviceId) : '';
+                    const hasDeviceOption = item.deviceId != null && deviceEntities.some((device) => device.id === item.deviceId);
+                    const dashboardSelectValue = item.dashboardUid ?? '';
+                    const hasDashboardOption =
+                      !dashboardSelectValue || dashboards.some((dashboard) => dashboard.uid === dashboardSelectValue);
+
+                    return (
                       <div
+                        key={item.id != null ? `card-${item.id}` : `draft-${index}`}
                         style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                          gap: '12px',
-                          alignItems: 'end',
+                          border: '1px solid rgba(0, 0, 0, 0.1)',
+                          borderRadius: '6px',
+                          padding: '16px',
+                          backgroundColor: 'rgba(0, 0, 0, 0.015)',
                         }}
                       >
-                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                          <span>Card name</span>
-                          <input
-                            value={item.room}
-                            onChange={(event) => updateSettingsRow(index, { room: event.target.value })}
-                            placeholder="e.g. Room 2"
-                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
-                          />
-                        </label>
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                            gap: '12px',
+                            alignItems: 'end',
+                          }}
+                        >
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                            <span>Card name</span>
+                            <input
+                              value={item.room}
+                              onChange={(event) => updateSettingsRow(index, { room: event.target.value })}
+                              placeholder="e.g. Room 2"
+                              style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                            />
+                          </label>
 
-                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                          <span>绑定设备</span>
-                          <select
-                            value={item.deviceId ?? ''}
-                            onChange={(event) => handleCardDeviceSelect(index, event.target.value)}
-                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
-                            disabled={deviceEntities.length === 0}
-                          >
-                            <option value="">请选择设备</option>
-                            {deviceEntities.map((device) => (
-                              <option key={device.id} value={device.id}>
-                                {device.name} ({device.deviceMac})
-                              </option>
-                            ))}
-                          </select>
-                          <span style={{ fontSize: '12px', color: 'rgba(0,0,0,0.45)' }}>
-                            当前 MAC：{item.deviceMac || '未选择'}
-                          </span>
-                        </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                            <span>绑定设备</span>
+                            <select
+                              value={deviceSelectValue}
+                              onChange={(event) => handleCardDeviceSelect(index, event.target.value)}
+                              style={dropdownStyle}
+                              disabled={deviceEntities.length === 0}
+                            >
+                              <option value="">请选择设备</option>
+                              {!hasDeviceOption && deviceSelectValue && (
+                                <option value={deviceSelectValue}>
+                                  {item.deviceMac ? `${item.deviceMac}（未在设备列表）` : '当前设备已不可用'}
+                                </option>
+                              )}
+                              {deviceEntities.map((device) => (
+                                <option key={device.id} value={String(device.id)}>
+                                  {device.name} ({device.deviceMac})
+                                </option>
+                              ))}
+                            </select>
+                            {/* <span style={{ fontSize: '12px', color: 'rgba(0,0,0,0.45)' }}>
+                              当前 MAC：{item.deviceMac || '未选择'}
+                            </span> */}
+                          </label>
 
-                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                          <span>Device type</span>
-                          <select
-                            value={item.deviceType ?? DEFAULT_DEVICE_TYPE}
-                            onChange={(event) => updateSettingsRow(index, { deviceType: event.target.value })}
-                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
-                          >
-                            {DEVICE_TYPE_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                            <span>Device type</span>
+                            <select
+                              value={item.deviceType ?? DEFAULT_DEVICE_TYPE}
+                              onChange={(event) => updateSettingsRow(index, { deviceType: event.target.value })}
+                              style={dropdownStyle}
+                            >
+                              {DEVICE_TYPE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
 
-                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                          <span>Dashboard</span>
-                          <select
-                            value={item.dashboardUid ?? ''}
-                            onChange={(event) => {
-                              const dashboard = dashboardByUid.get(event.target.value);
-                              updateSettingsRow(index, {
-                                dashboardUid: event.target.value,
-                                dashboardUrl: dashboard?.url ?? '',
-                              });
-                            }}
-                            style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
-                          >
-                            <option value="">Unbound</option>
-                            {dashboards.map((dashboard) => (
-                              <option key={dashboard.uid} value={dashboard.uid}>
-                                {dashboard.title}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                            <span>Dashboard</span>
+                            <select
+                              value={dashboardSelectValue}
+                              onChange={(event) => {
+                                const dashboard = dashboardByUid.get(event.target.value);
+                                updateSettingsRow(index, {
+                                  dashboardUid: event.target.value,
+                                  dashboardUrl: dashboard?.url ?? '',
+                                });
+                              }}
+                              style={dropdownStyle}
+                            >
+                              <option value="">Unbound</option>
+                              {!hasDashboardOption && dashboardSelectValue && (
+                                <option value={dashboardSelectValue}>
+                                  {item.dashboardUrl || `${dashboardSelectValue}（未找到）`}
+                                </option>
+                              )}
+                              {dashboards.map((dashboard) => (
+                                <option key={dashboard.uid} value={dashboard.uid}>
+                                  {dashboard.title}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', gap: '12px' }}>
+                          {/* <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+                            Current dashboard UID: {item.dashboardUid || 'Unbound'}
+                          </span> */}
+                          <Button variant="destructive" size="sm" onClick={() => removeSettingsRow(index)}>
+                            Delete
+                          </Button>
+                        </div>
                       </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', gap: '12px' }}>
-                        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
-                          Current dashboard UID: {item.dashboardUid || 'Unbound'}
-                        </span>
-                        <Button variant="destructive" size="sm" onClick={() => removeSettingsRow(index)}>
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
