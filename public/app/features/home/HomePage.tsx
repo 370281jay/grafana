@@ -1,9 +1,17 @@
 /* eslint-disable @grafana/i18n/no-untranslated-strings */
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 
+import { Box, Button } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
 import { getBackendSrv } from 'app/core/services/backend_srv';
-import { Box, Button } from '@grafana/ui';
+
 
 interface InfluxRow {
   device_id?: string;
@@ -653,7 +661,7 @@ export function HomePage() {
   }, [fetchVitals]);
 
   //增加房间号映射 
-  const alarmSoundMap = useMemo(
+  const alarmSoundMap = useMemo<Record<string, string>>(
     () => ({
       '1': '/public/sounds/room1.mp3',
       '2': '/public/sounds/room2.mp3',
@@ -674,8 +682,8 @@ export function HomePage() {
       }
 
       if (index < roomIds.length) {
-  const roomId = roomIds[index];
-  const audioFilePath = alarmSoundMap[roomId as keyof typeof alarmSoundMap] ?? '/public/sounds/room1.mp3';
+        const roomId = roomIds[index];
+        const audioFilePath = alarmSoundMap[roomId] ?? '/public/sounds/room1.mp3';
 
         if (audioRef.current) {
           audioRef.current.pause();
@@ -817,6 +825,17 @@ export function HomePage() {
     }
   };
 
+  const handleBackdropClick = (
+    event: ReactMouseEvent<HTMLDivElement>,
+    action: () => void,
+    canClose: () => boolean = () => true
+  ) => {
+    if (event.target !== event.currentTarget || !canClose()) {
+      return;
+    }
+    action();
+  };
+
   const handleCardClick = (dashboardLink: string | null) => {
     if (dashboardLink) {
       window.location.assign(dashboardLink);
@@ -889,13 +908,14 @@ export function HomePage() {
   };
 
   const saveSettings = async () => {
-    const cleanedRows = settingsDraft.map((item: DeviceConfig) => ({
+    const cleanedRows: DeviceConfig[] = settingsDraft.map((item): DeviceConfig => ({
       ...item,
       room: item.room.trim(),
       deviceId: item.deviceId ?? null,
       deviceMac: normalizeDeviceMac(item.deviceMac ?? ''),
       deviceType: (item.deviceType ?? DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
       dashboardUid: (item.dashboardUid ?? '').trim(),
+      dashboardUrl: (item.dashboardUrl ?? '').trim(),
     }));
 
     if (cleanedRows.length === 0) {
@@ -1725,11 +1745,15 @@ export function HomePage() {
                 justifyContent: 'center',
                 zIndex: 1350,
               }}
-              onClick={() => {
-                if (!isSavingSettings) {
-                  setSettingsModalOpen(false);
-                }
-              }}
+              onClick={(event) =>
+                handleBackdropClick(
+                  event,
+                  () => {
+                    setSettingsModalOpen(false);
+                  },
+                  () => !isSavingSettings
+                )
+              }
               onKeyDown={(event) =>
                 handleBackdropKeyDown(event, () => {
                   if (!isSavingSettings) {
@@ -1750,7 +1774,6 @@ export function HomePage() {
                   overflowY: 'auto',
                   boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
                 }}
-                onClick={(event) => event.stopPropagation()}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px', flexWrap: 'wrap' }}>
                   <div>
@@ -1913,7 +1936,7 @@ export function HomePage() {
                 justifyContent: 'center',
                 zIndex: 1400,
               }}
-              onClick={closeDeviceManager}
+              onClick={(event) => handleBackdropClick(event, closeDeviceManager)}
               onKeyDown={(event) => handleBackdropKeyDown(event, closeDeviceManager)}
             >
               <div
@@ -1928,7 +1951,6 @@ export function HomePage() {
                   overflowY: 'auto',
                   boxShadow: '0 18px 36px rgba(0, 0, 0, 0.25)',
                 }}
-                onClick={(event) => event.stopPropagation()}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
                   <div>
@@ -2089,7 +2111,7 @@ export function HomePage() {
                 justifyContent: 'center',
                 zIndex: 1300,
               }}
-              onClick={() => setHelpModalOpen(false)}
+              onClick={(event) => handleBackdropClick(event, () => setHelpModalOpen(false))}
               onKeyDown={(event) => handleBackdropKeyDown(event, () => setHelpModalOpen(false))}
             >
               <div
@@ -2104,7 +2126,6 @@ export function HomePage() {
                   overflowY: 'auto',
                   boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
                 }}
-                onClick={(event) => event.stopPropagation()}
               >
                 <h2 style={{ marginBottom: '12px' }}>界面使用教程</h2>
                 <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
@@ -2137,7 +2158,7 @@ export function HomePage() {
                 justifyContent: 'center',
                 zIndex: 1300,
               }}
-              onClick={() => setContactModalOpen(false)}
+              onClick={(event) => handleBackdropClick(event, () => setContactModalOpen(false))}
               onKeyDown={(event) => handleBackdropKeyDown(event, () => setContactModalOpen(false))}
             >
               <div
@@ -2152,7 +2173,6 @@ export function HomePage() {
                   overflowY: 'auto',
                   boxShadow: '0 12px 24px rgba(0, 0, 0, 0.2)',
                 }}
-                onClick={(event) => event.stopPropagation()}
               >
                 <h2 style={{ marginBottom: '12px' }}>联系我们</h2>
                 <p style={{ fontSize: '14px', lineHeight: 1.6, marginBottom: '12px' }}>
