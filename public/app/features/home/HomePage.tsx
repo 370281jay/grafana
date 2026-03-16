@@ -1,5 +1,5 @@
 /* eslint-disable @grafana/i18n/no-untranslated-strings */
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 
 import { Page } from 'app/core/components/Page/Page';
 import { getBackendSrv } from 'app/core/services/backend_srv';
@@ -139,6 +139,8 @@ type DeviceFormValues = {
   deviceType: string;
   description: string;
 };
+
+type DeviceConfigWithId = DeviceConfig & { id: number };
 
 type HomePageCardDTO = {
   id: number;
@@ -673,7 +675,7 @@ export function HomePage() {
 
       if (index < roomIds.length) {
   const roomId = roomIds[index];
-  const audioFilePath = alarmSoundMap[roomId] || '/public/sounds/room1.mp3';
+  const audioFilePath = alarmSoundMap[roomId as keyof typeof alarmSoundMap] ?? '/public/sounds/room1.mp3';
 
         if (audioRef.current) {
           audioRef.current.pause();
@@ -917,14 +919,14 @@ export function HomePage() {
 
     try {
       const rowsWithId = cleanedRows.filter(
-        (item: DeviceConfig): item is DeviceConfig & { id: number } => typeof item.id === 'number'
+        (item: DeviceConfig): item is DeviceConfigWithId => typeof item.id === 'number'
       );
-      const nextIds = new Set<number>(rowsWithId.map((item: DeviceConfig & { id: number }) => item.id));
+      const nextIds = new Set<number>(rowsWithId.map((item: DeviceConfigWithId) => item.id));
 
       const deletedIds = deviceConfigs
-        .filter((item: DeviceConfig): item is DeviceConfig & { id: number } => typeof item.id === 'number')
-        .filter((item: DeviceConfig & { id: number }) => !nextIds.has(item.id))
-        .map((item: DeviceConfig & { id: number }) => item.id);
+        .filter((item: DeviceConfig): item is DeviceConfigWithId => typeof item.id === 'number')
+        .filter((item: DeviceConfigWithId) => !nextIds.has(item.id))
+        .map((item: DeviceConfigWithId) => item.id);
 
       for (const id of deletedIds) {
         await getBackendSrv().delete(`/api/home-page-cards/${id}`);
