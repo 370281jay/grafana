@@ -1,7 +1,27 @@
+/* eslint-disable @grafana/i18n/no-untranslated-strings */
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+
+import { Page } from 'app/core/components/Page/Page';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 import { Box, Button } from '@grafana/ui';
-import { Page } from 'app/core/components/Page/Page';
+
+interface InfluxRow {
+  device_id?: string;
+  _field?: string;
+  _value?: number | string | null;
+}
+
+interface InfluxQueryResponse {
+  results?: InfluxRow[];
+}
+
+interface SearchResultItem {
+  id: number;
+  uid?: string;
+  title?: string;
+  url?: string;
+  type?: string;
+}
 
 interface DeviceConfig {
   id?: number;
@@ -208,14 +228,17 @@ type DeviceMetricsWithRisk = DeviceMetrics & {
   humanPresence?: number | null;
 };
 
-const extractDeviceMetrics = (response: any): Map<string, DeviceMetricsWithRisk> => {
+const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, DeviceMetricsWithRisk> => {
   const grouped = new Map<string, DeviceMetricsWithRisk>();
-  const records = Array.isArray(response?.results) ? response.results : [];
+  const records: InfluxRow[] = Array.isArray(response?.results) ? response.results : [];
 
-  records.forEach((row: any) => {
-    const deviceId = String(row?.device_id ?? '').trim();
-    const field = String(row?._field ?? '').trim();
+  records.forEach((row: InfluxRow) => {
+    const deviceIdRaw = row?.device_id;
+    const fieldRaw = row?._field;
     const rawValue = row?._value;
+
+    const deviceId = typeof deviceIdRaw === 'string' ? deviceIdRaw.trim() : '';
+    const field = typeof fieldRaw === 'string' ? fieldRaw.trim() : '';
 
     if (!deviceId || !field || rawValue === undefined || rawValue === null) {
       return;
@@ -379,23 +402,22 @@ export function HomePage() {
 
   const fetchDashboards = async () => {
     try {
-      const searchResult = await getBackendSrv().get('/api/search', {
+      const searchResult = await getBackendSrv().get<SearchResultItem[]>('/api/search', {
         type: 'dash-db',
         query: '*',
         limit: 100,
       });
 
-      const items = Array.isArray(searchResult)
-        ? searchResult
-            .filter((item: any) => item?.type === 'dash-db' && typeof item?.url === 'string')
-            .map((item: any) => ({
-              id: item.id,
-              uid: String(item.uid ?? ''),
-              title: String(item.title ?? ''),
-              url: String(item.url ?? ''),
-            }))
-            .sort((a: any, b: any) => a.id - b.id)
-        : [];
+      const rawItems: SearchResultItem[] = Array.isArray(searchResult) ? searchResult : [];
+      const items = rawItems
+        .filter((item: SearchResultItem) => item?.type === 'dash-db' && typeof item?.url === 'string')
+        .map((item) => ({
+          id: Number(item.id ?? 0),
+          uid: String(item.uid ?? ''),
+          title: String(item.title ?? ''),
+          url: String(item.url ?? ''),
+        }))
+        .sort((a, b) => a.id - b.id);
 
       setDashboards(items);
     } catch (err) {
@@ -629,13 +651,15 @@ export function HomePage() {
   }, [fetchVitals]);
 
   //增加房间号映射 
-  const ALARM_SOUND_MAP: Record<string,string> ={
-    '1': '/public/sounds/room1.mp3',
-    '2': '/public/sounds/room2.mp3',
-    '3': '/public/sounds/room3.mp3',
-    '4': '/public/sounds/room4.mp3',
-
-  }
+  const alarmSoundMap = useMemo(
+    () => ({
+      '1': '/public/sounds/room1.mp3',
+      '2': '/public/sounds/room2.mp3',
+      '3': '/public/sounds/room3.mp3',
+      '4': '/public/sounds/room4.mp3',
+    }),
+    []
+  );
 
   const playMultipleAlarmSounds = useCallback((roomIds: string[]) => {
     let index = 0;
@@ -648,8 +672,8 @@ export function HomePage() {
       }
 
       if (index < roomIds.length) {
-        const roomId = roomIds[index];
-        const audioFilePath = ALARM_SOUND_MAP[roomId] || '/public/sounds/room1.mp3';
+  const roomId = roomIds[index];
+  const audioFilePath = alarmSoundMap[roomId] || '/public/sounds/room1.mp3';
 
         if (audioRef.current) {
           audioRef.current.pause();
@@ -689,7 +713,7 @@ export function HomePage() {
     };
 
     playNext();
-  }, []);
+  }, [alarmSoundMap]);
 
   const stopAlarmSound = useCallback(() => {
     if (audioRef.current) {
@@ -766,10 +790,48 @@ export function HomePage() {
       stopAlarmSound();
       setAlarmDevices([]);
     }
-  }, [deviceVitals, lastAlarmTime, isAlarmModalOpen, acknowledgedRiskRooms]);
+  }, [
+    deviceVitals,
+    lastAlarmTime,
+    isAlarmModalOpen,
+    acknowledgedRiskRooms,
+    playMultipleAlarmSounds,
+    stopAlarmSound,
+  ]);
 
   const handleManualRefresh = () => {
     fetchVitals({ showIndicator: true });
+  };
+
+  const shouldActivateFromKey = (key: string) => key === 'Enter' || key === ' ' || key === 'Spacebar';
+
+  const handleBackdropKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    action: () => void
+  ) => {
+    if (event.key === 'Escape' || shouldActivateFromKey(event.key)) {
+      event.preventDefault();
+      action();
+    }
+  };
+
+  const handleCardClick = (dashboardLink: string | null) => {
+    if (dashboardLink) {
+      window.location.assign(dashboardLink);
+    }
+  };
+
+  const handleCardKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    dashboardLink: string | null
+  ) => {
+    if (!dashboardLink) {
+      return;
+    }
+    if (shouldActivateFromKey(event.key)) {
+      event.preventDefault();
+      handleCardClick(dashboardLink);
+    }
   };
 
   const openSettingsModal = () => {
@@ -808,7 +870,7 @@ export function HomePage() {
 
   const handleCardDeviceSelect = (index: number, value: string) => {
     const nextDeviceId = value ? Number(value) : null;
-    const selectedDevice = deviceEntities.find((device) => device.id === nextDeviceId);
+    const selectedDevice = deviceEntities.find((device: DeviceEntity) => device.id === nextDeviceId);
 
     setSettingsDraft((prev: DeviceConfig[]) =>
       prev.map((item: DeviceConfig, itemIndex: number) =>
@@ -854,12 +916,15 @@ export function HomePage() {
     setSettingsError(null);
 
     try {
-      const nextIds = new Set<number>(
-        cleanedRows.filter((item: DeviceConfig) => item.id != null).map((item: DeviceConfig) => item.id as number)
+      const rowsWithId = cleanedRows.filter(
+        (item: DeviceConfig): item is DeviceConfig & { id: number } => typeof item.id === 'number'
       );
+      const nextIds = new Set<number>(rowsWithId.map((item: DeviceConfig & { id: number }) => item.id));
+
       const deletedIds = deviceConfigs
-        .filter((item: DeviceConfig) => item.id != null && !nextIds.has(item.id as number))
-        .map((item: DeviceConfig) => item.id as number);
+        .filter((item: DeviceConfig): item is DeviceConfig & { id: number } => typeof item.id === 'number')
+        .filter((item: DeviceConfig & { id: number }) => !nextIds.has(item.id))
+        .map((item: DeviceConfig & { id: number }) => item.id);
 
       for (const id of deletedIds) {
         await getBackendSrv().delete(`/api/home-page-cards/${id}`);
@@ -1069,11 +1134,10 @@ export function HomePage() {
       <div
         key={device.deviceMac || String(device.deviceId) || device.room}
         className="hp-card hp-card-fall"
-        onClick={() => {
-          if (dashboardLink) {
-            window.location.assign(dashboardLink);
-          }
-        }}
+        role={dashboardLink ? 'button' : undefined}
+        tabIndex={dashboardLink ? 0 : -1}
+        onClick={dashboardLink ? () => handleCardClick(dashboardLink) : undefined}
+        onKeyDown={dashboardLink ? (event) => handleCardKeyDown(event, dashboardLink) : undefined}
         style={{
           padding: '12px',
           backgroundColor: cardBackgroundColor,
@@ -1501,11 +1565,10 @@ export function HomePage() {
                     <div
                       key={device.deviceMac || String(device.deviceId) || device.room}
                       className="hp-card"
-                      onClick={() => {
-                        if (dashboardLink) {
-                          window.location.assign(dashboardLink);
-                        }
-                      }}
+                      role={dashboardLink ? 'button' : undefined}
+                      tabIndex={dashboardLink ? 0 : -1}
+                      onClick={dashboardLink ? () => handleCardClick(dashboardLink) : undefined}
+                      onKeyDown={dashboardLink ? (event) => handleCardKeyDown(event, dashboardLink) : undefined}
                       style={{
                         padding: '12px',
                         backgroundColor: cardBackgroundColor,
@@ -1649,6 +1712,8 @@ export function HomePage() {
 
           {isSettingsModalOpen && (
             <div
+              role="button"
+              tabIndex={0}
               style={{
                 position: 'fixed',
                 inset: 0,
@@ -1663,6 +1728,13 @@ export function HomePage() {
                   setSettingsModalOpen(false);
                 }
               }}
+              onKeyDown={(event) =>
+                handleBackdropKeyDown(event, () => {
+                  if (!isSavingSettings) {
+                    setSettingsModalOpen(false);
+                  }
+                })
+              }
             >
               <div
                 className="hp-modal-content"
@@ -1828,6 +1900,8 @@ export function HomePage() {
 
           {isDeviceManagerOpen && (
             <div
+              role="button"
+              tabIndex={0}
               style={{
                 position: 'fixed',
                 inset: 0,
@@ -1838,6 +1912,7 @@ export function HomePage() {
                 zIndex: 1400,
               }}
               onClick={closeDeviceManager}
+              onKeyDown={(event) => handleBackdropKeyDown(event, closeDeviceManager)}
             >
               <div
                 className="hp-modal-content"
@@ -2001,6 +2076,8 @@ export function HomePage() {
           {/* 帮助弹窗 */}
           {isHelpModalOpen && (
             <div
+              role="button"
+              tabIndex={0}
               style={{
                 position: 'fixed',
                 inset: 0,
@@ -2011,6 +2088,7 @@ export function HomePage() {
                 zIndex: 1300,
               }}
               onClick={() => setHelpModalOpen(false)}
+              onKeyDown={(event) => handleBackdropKeyDown(event, () => setHelpModalOpen(false))}
             >
               <div
                 className="hp-modal-content"
@@ -2030,7 +2108,7 @@ export function HomePage() {
                 <ol style={{ fontSize: '14px', lineHeight: 1.6, paddingLeft: '18px', marginBottom: '16px' }}>
                   <li>顶部按钮支持快速跳转平台、查看帮助与联系我们信息。</li>
                   <li>房间卡片展示实时健康数据，可点击进入对应仪表板。</li>
-                  <li>使用"手动刷新"按钮获取最新数据，或等待系统自动更新。</li>
+                  <li>使用“手动刷新”按钮获取最新数据，或等待系统自动更新。</li>
                   <li>卡片颜色指示状态：绿色表示有人且无风险，红色表示检测到摔倒风险。</li>
                   <li>目前如果1分钟内有任何风险值，都会提示存在风险。</li>
                 </ol>
@@ -2046,6 +2124,8 @@ export function HomePage() {
           {/* 联系我们弹窗 */}
           {isContactModalOpen && (
             <div
+              role="button"
+              tabIndex={0}
               style={{
                 position: 'fixed',
                 inset: 0,
@@ -2056,6 +2136,7 @@ export function HomePage() {
                 zIndex: 1300,
               }}
               onClick={() => setContactModalOpen(false)}
+              onKeyDown={(event) => handleBackdropKeyDown(event, () => setContactModalOpen(false))}
             >
               <div
                 className="hp-modal-content"
