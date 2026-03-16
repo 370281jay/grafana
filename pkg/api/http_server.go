@@ -62,6 +62,8 @@ import (
 	"github.com/grafana/grafana/pkg/services/datasourceproxy"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/datasources/guardian"
+	"github.com/grafana/grafana/pkg/services/devices"
+	"github.com/grafana/grafana/pkg/services/devices/devicesimpl"
 	"github.com/grafana/grafana/pkg/services/encryption"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/folder"
@@ -200,6 +202,7 @@ type HTTPServer struct {
 	PublicDashboardsApi          *publicdashboardsApi.Api
 	starService                  star.Service
 	homePageCardService          homepagecards.Service
+	deviceService                devices.Service
 	playlistService              playlist.Service
 	apiKeyService                apikey.Service
 	kvStore                      kvstore.KVStore
@@ -355,6 +358,7 @@ func ProvideHTTPServer(opts ServerOptions, cfg *setting.Cfg, routeRegister routi
 		dashboardVersionService:      dashboardVersionService,
 		starService:                  starService,
 		homePageCardService:          homepagecardsimpl.ProvideService(sqlStore),
+		deviceService:                devicesimpl.ProvideService(sqlStore),
 		playlistService:              playlistService,
 		apiKeyService:                apiKeyService,
 		kvStore:                      kvStore,

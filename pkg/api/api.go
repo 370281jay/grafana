@@ -506,6 +506,9 @@ func (hs *HTTPServer) registerRoutes() {
 		// Playlist
 		hs.registerPlaylistAPI(apiRoute)
 
+		// Devices
+		hs.registerDeviceAPI(apiRoute)
+
 		// Home page cards
 		hs.registerHomePageCardAPI(apiRoute)
 

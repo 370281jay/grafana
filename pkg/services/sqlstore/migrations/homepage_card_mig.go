@@ -10,6 +10,7 @@ func addHomePageCardMigrations(mg *Migrator) {
 		Columns: []*Column{
 			{Name: "id", Type: DB_BigInt, Nullable: false, IsPrimaryKey: true, IsAutoIncrement: true},
 			{Name: "org_id", Type: DB_BigInt, Nullable: false},
+			{Name: "device_id", Type: DB_BigInt, Nullable: true},
 			{Name: "device_mac", Type: DB_NVarchar, Length: 64, Nullable: false},
 			{Name: "card_name", Type: DB_NVarchar, Length: 190, Nullable: false},
 			{Name: "dashboard_uid", Type: DB_NVarchar, Length: 40, Nullable: true},
@@ -27,5 +28,8 @@ func addHomePageCardMigrations(mg *Migrator) {
 	mg.AddMigration("add index home_page_card.org_id", NewAddIndexMigration(homePageCardV1, homePageCardV1.Indices[1]))
 	mg.AddMigration("add column device_type in home_page_card", NewAddColumnMigration(homePageCardV1, &Column{
 		Name: "device_type", Type: DB_NVarchar, Length: 64, Nullable: true,
+	}))
+	mg.AddMigration("add column device_id in home_page_card", NewAddColumnMigration(homePageCardV1, &Column{
+		Name: "device_id", Type: DB_BigInt, Nullable: true,
 	}))
 }

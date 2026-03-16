@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 import { Box, Button } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
@@ -6,7 +6,8 @@ import { Page } from 'app/core/components/Page/Page';
 interface DeviceConfig {
   id?: number;
   room: string;
-  deviceId: string;
+  deviceId: number | null;
+  deviceMac: string;
   deviceType?: string;
   dashboardUid?: string;
   dashboardUrl?: string;
@@ -83,7 +84,8 @@ const calculateTrends = (
 };
 
 interface DeviceVitals extends DeviceMetrics {
-  deviceId: string;
+  deviceId: number | null;
+  deviceMac: string;
   room: string;
   deviceType: string;
   occupied: boolean;
@@ -103,8 +105,24 @@ type DashboardSummary = {
   url: string;
 };
 
+type DeviceEntity = {
+  id: number;
+  name: string;
+  deviceMac: string;
+  deviceType?: string;
+  description?: string;
+};
+
+type DeviceFormValues = {
+  name: string;
+  deviceMac: string;
+  deviceType: string;
+  description: string;
+};
+
 type HomePageCardDTO = {
   id: number;
+  deviceId?: number;
   deviceMac: string;
   deviceType?: string;
   cardName: string;
@@ -128,14 +146,14 @@ type DeviceFilterValue = 'all' | 'heart-rate' | 'fall-detection';
 
 const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
 
-const normalizeDeviceId = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
+const normalizeDeviceMac = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
 //房间添加
 const MONITORED_DEVICES: DeviceConfig[] = [
   // { room: '1', deviceId: 'D0CF1316DEC4' },
-  { room: '1', deviceId: 'B8F862F6BFD8', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '2', deviceId: '84F7035346E0', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '3', deviceId: '10B41DC081B2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '4', deviceId: '84F7035346E2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '1', deviceId: null, deviceMac: 'B8F862F6BFD8', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '2', deviceId: null, deviceMac: '84F7035346E0', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '3', deviceId: null, deviceMac: '10B41DC081B2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
+  { room: '4', deviceId: null, deviceMac: '84F7035346E2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
   // 在此添加更多设备配置
 ];
 
@@ -150,7 +168,10 @@ const buildDeviceFilter = (devices: DeviceConfig[]): string => {
   if (!devices.length) {
     return 'true';
   }
-  return devices.map((device) => `r["device_id"] == "${device.deviceId}"`).join(' or ');
+  return devices
+    .filter((device) => device.deviceMac)
+    .map((device) => `r["device_id"] == "${device.deviceMac}"`)
+    .join(' or ') || 'true';
 };
 
 const formatMetric = (value: number | null, fractionDigits = 0): string => {
@@ -261,7 +282,8 @@ const createEmptyMetrics = (): DeviceMetrics => ({
 });
 
 const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
-  deviceId: config.deviceId,
+  deviceId: config.deviceId ?? null,
+  deviceMac: config.deviceMac ?? '',
   room: config.room,
   deviceType: config.deviceType ?? DEFAULT_DEVICE_TYPE,
   ...createEmptyMetrics(),
@@ -289,6 +311,17 @@ export function HomePage() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [deviceEntities, setDeviceEntities] = useState<DeviceEntity[]>([]);
+  const [isDeviceManagerOpen, setDeviceManagerOpen] = useState(false);
+  const [deviceFormValues, setDeviceFormValues] = useState<DeviceFormValues>({
+    name: '',
+    deviceMac: '',
+    deviceType: DEFAULT_DEVICE_TYPE,
+    description: '',
+  });
+  const [editingDeviceId, setEditingDeviceId] = useState<number | null>(null);
+  const [deviceModalError, setDeviceModalError] = useState<string | null>(null);
+  const [isSavingDevice, setIsSavingDevice] = useState(false);
   const [isContactModalOpen, setContactModalOpen] = useState(false);
   const [isHelpModalOpen, setHelpModalOpen] = useState(false);
   const [isAlarmModalOpen, setAlarmModalOpen] = useState(false);
@@ -326,8 +359,8 @@ export function HomePage() {
       const summary = config.dashboardUid ? dashboardByUid.get(config.dashboardUid) : undefined;
       const dashboardUrl = summary?.url ?? config.dashboardUrl;
 
-      if (dashboardUrl) {
-        map.set(config.deviceId, dashboardUrl);
+      if (dashboardUrl && config.deviceMac) {
+        map.set(config.deviceMac, dashboardUrl);
       }
     });
     return map;
@@ -370,6 +403,41 @@ export function HomePage() {
     }
   };
 
+  const fetchDevices = useCallback(async () => {
+    try {
+      const result = await getBackendSrv().get<DeviceEntity[]>('/api/devices');
+      const items = Array.isArray(result)
+        ? result.map((item) => ({
+            id: item.id,
+            name: String(item.name ?? '').trim(),
+            deviceMac: normalizeDeviceMac(String(item.deviceMac ?? '')),
+            deviceType: item.deviceType ? String(item.deviceType).trim() : DEFAULT_DEVICE_TYPE,
+            description: String(item.description ?? '').trim(),
+          }))
+        : [];
+
+      setDeviceEntities(items);
+      setSettingsDraft((prev: DeviceConfig[]) =>
+        prev.map((config) => {
+          if (config.deviceId == null) {
+            return config;
+          }
+          const match = items.find((device) => device.id === config.deviceId);
+          if (!match) {
+            return config;
+          }
+          return {
+            ...config,
+            deviceMac: match.deviceMac,
+            deviceType: config.deviceType ?? match.deviceType ?? DEFAULT_DEVICE_TYPE,
+          };
+        })
+      );
+    } catch (err) {
+      console.error('Failed to fetch devices:', err);
+    }
+  }, []);
+
   const fetchCardConfigs = async () => {
     try {
       const result = await getBackendSrv().get<HomePageCardDTO[]>('/api/home-page-cards');
@@ -380,11 +448,12 @@ export function HomePage() {
       }
 
       const items = result
-        .filter((item) => item && typeof item.deviceMac === 'string' && typeof item.cardName === 'string')
+        .filter((item) => item && typeof item.cardName === 'string')
         .map((item) => ({
           id: item.id,
           room: String(item.cardName ?? '').trim(),
-          deviceId: normalizeDeviceId(String(item.deviceMac ?? '')),
+          deviceId: typeof item.deviceId === 'number' ? item.deviceId : null,
+          deviceMac: normalizeDeviceMac(String(item.deviceMac ?? '')),
           deviceType: String(item.deviceType ?? DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
           dashboardUid: String(item.dashboardUid ?? '').trim(),
           dashboardUrl: String(item.dashboardUrl ?? '').trim(),
@@ -428,8 +497,13 @@ export function HomePage() {
         const nextMetricsMap = new Map<string, DeviceMetrics>();
         const now = Date.now();
 
-  const updatedVitals: DeviceVitals[] = deviceConfigs.map((config: DeviceConfig) => {
-          const metricsWithRisk = groupedMetrics.get(config.deviceId) ?? {
+        const updatedVitals: DeviceVitals[] = deviceConfigs.map((config: DeviceConfig) => {
+          const deviceKey = config.deviceMac;
+          if (!deviceKey) {
+            return buildEmptyDeviceVitals(config);
+          }
+
+          const metricsWithRisk = groupedMetrics.get(deviceKey) ?? {
             ...createEmptyMetrics(),
             fallRiskDetected: false,
             fallFlag: null,
@@ -450,7 +524,7 @@ export function HomePage() {
           // 对 heartRate / respirationRate 做"最后有效值"填充：
           // 若本帧为 null，但上次有效值未超过 METRIC_STALE_THRESHOLD_MS，则保持旧值显示，
           // 并在 staleFields 中标记，以便渲染时用灰色区分。
-          const deviceLastKnown = lastKnownMetricsRef.current.get(config.deviceId) ?? {
+          const deviceLastKnown = lastKnownMetricsRef.current.get(deviceKey) ?? {
             heartRate: null,
             respirationRate: null,
             distanceMin: null,
@@ -477,11 +551,11 @@ export function HomePage() {
             }
           });
 
-          lastKnownMetricsRef.current.set(config.deviceId, deviceLastKnown);
+          lastKnownMetricsRef.current.set(deviceKey, deviceLastKnown);
           // ——— 结束空白帧保持策略 ———
 
-          nextMetricsMap.set(config.deviceId, metrics);
-          const trends = calculateTrends(previousMetrics.get(config.deviceId), metrics);
+          nextMetricsMap.set(deviceKey, metrics);
+          const trends = calculateTrends(previousMetrics.get(deviceKey), metrics);
 
           const deviceType = config.deviceType ?? DEFAULT_DEVICE_TYPE;
           const isFallDevice = deviceType === 'fall-detection';
@@ -496,7 +570,8 @@ export function HomePage() {
             : metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
           return {
-            deviceId: config.deviceId,
+            deviceId: config.deviceId ?? null,
+            deviceMac: deviceKey,
             room: config.room,
             deviceType,
             heartRate: metrics.heartRate,
@@ -534,6 +609,10 @@ export function HomePage() {
     fetchDashboards();
     fetchCardConfigs();
   }, []);
+
+  useEffect(() => {
+    fetchDevices();
+  }, [fetchDevices]);
 
   useEffect(() => {
   setDeviceVitals(deviceConfigs.map((config: DeviceConfig) => buildEmptyDeviceVitals(config)));
@@ -694,7 +773,10 @@ export function HomePage() {
   };
 
   const openSettingsModal = () => {
-  setSettingsDraft(deviceConfigs.map((config: DeviceConfig) => ({ ...config })));
+    if (!deviceEntities.length) {
+      fetchDevices();
+    }
+    setSettingsDraft(deviceConfigs.map((config: DeviceConfig) => ({ ...config })));
     setSettingsError(null);
     setSettingsNotice(null);
     setSettingsModalOpen(true);
@@ -705,7 +787,8 @@ export function HomePage() {
       ...prev,
       {
         room: `${prev.length + 1}`,
-        deviceId: '',
+        deviceId: null,
+        deviceMac: '',
         deviceType: DEFAULT_DEVICE_TYPE,
         dashboardUid: '',
         dashboardUrl: '',
@@ -723,11 +806,30 @@ export function HomePage() {
   setSettingsDraft((prev: DeviceConfig[]) => prev.filter((_, itemIndex: number) => itemIndex !== index));
   };
 
+  const handleCardDeviceSelect = (index: number, value: string) => {
+    const nextDeviceId = value ? Number(value) : null;
+    const selectedDevice = deviceEntities.find((device) => device.id === nextDeviceId);
+
+    setSettingsDraft((prev: DeviceConfig[]) =>
+      prev.map((item: DeviceConfig, itemIndex: number) =>
+        itemIndex === index
+          ? {
+              ...item,
+              deviceId: nextDeviceId,
+              deviceMac: selectedDevice?.deviceMac ?? '',
+              deviceType: item.deviceType ?? selectedDevice?.deviceType ?? DEFAULT_DEVICE_TYPE,
+            }
+          : item
+      )
+    );
+  };
+
   const saveSettings = async () => {
     const cleanedRows = settingsDraft.map((item: DeviceConfig) => ({
       ...item,
       room: item.room.trim(),
-      deviceId: normalizeDeviceId(item.deviceId),
+      deviceId: item.deviceId ?? null,
+      deviceMac: normalizeDeviceMac(item.deviceMac ?? ''),
       deviceType: (item.deviceType ?? DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
       dashboardUid: (item.dashboardUid ?? '').trim(),
     }));
@@ -737,14 +839,14 @@ export function HomePage() {
       return;
     }
 
-    if (cleanedRows.some((item: DeviceConfig) => !item.room || !item.deviceId)) {
-      setSettingsError('Please fill in card name and device MAC.');
+    if (cleanedRows.some((item: DeviceConfig) => !item.room || item.deviceId == null)) {
+      setSettingsError('请选择卡片绑定的设备。');
       return;
     }
 
     const uniqueDeviceIds = new Set(cleanedRows.map((item: DeviceConfig) => item.deviceId));
     if (uniqueDeviceIds.size !== cleanedRows.length) {
-      setSettingsError('Device MAC must be unique.');
+      setSettingsError('每个设备只能绑定一张卡片。');
       return;
     }
 
@@ -765,7 +867,8 @@ export function HomePage() {
 
       for (const item of cleanedRows) {
         const payload = {
-          deviceMac: item.deviceId,
+          deviceId: item.deviceId,
+          deviceMac: item.deviceMac || undefined,
           deviceType: item.deviceType,
           cardName: item.room,
           dashboardUid: item.dashboardUid,
@@ -787,6 +890,96 @@ export function HomePage() {
     } finally {
       setIsSavingSettings(false);
     }
+  };
+
+  const resetDeviceForm = () => {
+    setDeviceFormValues({ name: '', deviceMac: '', deviceType: DEFAULT_DEVICE_TYPE, description: '' });
+    setEditingDeviceId(null);
+  };
+
+  const handleDeviceFormChange = (field: keyof DeviceFormValues, value: string) => {
+    const normalizedValue = field === 'deviceMac' ? value.toUpperCase() : value;
+    setDeviceFormValues((prev: DeviceFormValues) => ({ ...prev, [field]: normalizedValue }));
+  };
+
+  const startEditDevice = (device: DeviceEntity) => {
+    setDeviceManagerOpen(true);
+    setDeviceModalError(null);
+    setEditingDeviceId(device.id);
+    setDeviceFormValues({
+      name: device.name,
+      deviceMac: device.deviceMac,
+      deviceType: device.deviceType ?? DEFAULT_DEVICE_TYPE,
+      description: device.description ?? '',
+    });
+  };
+
+  const handleDeviceFormSubmit = async () => {
+    const payload = {
+      name: deviceFormValues.name.trim(),
+      deviceMac: normalizeDeviceMac(deviceFormValues.deviceMac),
+      deviceType: (deviceFormValues.deviceType || DEFAULT_DEVICE_TYPE).trim() || DEFAULT_DEVICE_TYPE,
+      description: deviceFormValues.description.trim(),
+    };
+
+    if (!payload.name || !payload.deviceMac) {
+      setDeviceModalError('请填写设备名称和 MAC。');
+      return;
+    }
+
+    setIsSavingDevice(true);
+    setDeviceModalError(null);
+
+    try {
+      if (editingDeviceId) {
+        await getBackendSrv().put(`/api/devices/${editingDeviceId}`, payload);
+      } else {
+        await getBackendSrv().post('/api/devices', payload);
+      }
+      await fetchDevices();
+      await fetchCardConfigs();
+      resetDeviceForm();
+    } catch (err) {
+      console.error('Failed to save device:', err);
+      setDeviceModalError(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    } finally {
+      setIsSavingDevice(false);
+    }
+  };
+
+  const handleDeviceDelete = async (id: number) => {
+    if (!window.confirm('确定要删除该设备吗？删除后需要重新绑定卡片。')) {
+      return;
+    }
+
+    setDeviceModalError(null);
+    try {
+      await getBackendSrv().delete(`/api/devices/${id}`);
+      await fetchDevices();
+      await fetchCardConfigs();
+      if (editingDeviceId === id) {
+        resetDeviceForm();
+      }
+    } catch (err) {
+      console.error('Failed to delete device:', err);
+      setDeviceModalError(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  };
+
+  const openDeviceManager = () => {
+    fetchDevices();
+    setDeviceModalError(null);
+    resetDeviceForm();
+    setDeviceManagerOpen(true);
+  };
+
+  const closeDeviceManager = () => {
+    if (isSavingDevice) {
+      return;
+    }
+    setDeviceManagerOpen(false);
+    setDeviceModalError(null);
+    resetDeviceForm();
   };
 
   const renderMetric = (
@@ -854,7 +1047,8 @@ export function HomePage() {
   const renderCardHeader = (device: DeviceVitals, dashboardLink: string | null) => (
     <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       <span style={{ fontSize: '18px', fontWeight: 600 }}>{formatRoomLabel(device.room)}</span>
-      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备 ID: {device.deviceId}</span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备记录 ID: {device.deviceId ?? '未绑定'}</span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备 MAC: {device.deviceMac || '-'}</span>
       <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
         设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
       </span>
@@ -873,7 +1067,7 @@ export function HomePage() {
 
     return (
       <div
-        key={device.deviceId}
+        key={device.deviceMac || String(device.deviceId) || device.room}
         className="hp-card hp-card-fall"
         onClick={() => {
           if (dashboardLink) {
@@ -1286,7 +1480,7 @@ export function HomePage() {
                 }}
               >
                 {filteredDeviceVitals.map((device: DeviceVitals) => {
-                  const dashboardLink = dashboardUrlByDevice.get(device.deviceId) ?? null;
+                  const dashboardLink = device.deviceMac ? dashboardUrlByDevice.get(device.deviceMac) ?? null : null;
 
                   if (device.deviceType === 'fall-detection') {
                     return renderFallDetectionCard(device, dashboardLink);
@@ -1305,7 +1499,7 @@ export function HomePage() {
 
                   return (
                     <div
-                      key={device.deviceId}
+                      key={device.deviceMac || String(device.deviceId) || device.room}
                       className="hp-card"
                       onClick={() => {
                         if (dashboardLink) {
@@ -1484,16 +1678,21 @@ export function HomePage() {
                 }}
                 onClick={(event) => event.stopPropagation()}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px', flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ margin: 0, marginBottom: '8px' }}>首页卡片设置</h2>
                     <p style={{ margin: 0, fontSize: '13px', color: 'rgba(0, 0, 0, 0.6)' }}>
-                      为每张首页卡片配置设备 MAC、设备类型和仪表板。
+                      为每张首页卡片选择绑定设备、设备类型和仪表板。
                     </p>
                   </div>
-                  <Button variant="secondary" onClick={addSettingsRow}>
-                    新增卡片
-                  </Button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <Button variant="secondary" onClick={addSettingsRow}>
+                      新增卡片
+                    </Button>
+                    <Button variant="secondary" onClick={openDeviceManager}>
+                      管理设备
+                    </Button>
+                  </div>
                 </div>
 
                 {settingsError && (
@@ -1515,7 +1714,7 @@ export function HomePage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {settingsDraft.map((item, index) => (
                     <div
-                      key={item.id ?? `${item.deviceId}-${index}`}
+                      key={item.id ?? `${item.deviceId ?? 'new'}-${item.deviceMac || index}`}
                       style={{
                         border: '1px solid rgba(0, 0, 0, 0.1)',
                         borderRadius: '6px',
@@ -1542,13 +1741,23 @@ export function HomePage() {
                         </label>
 
                         <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                          <span>Device MAC</span>
-                          <input
-                            value={item.deviceId}
-                            onChange={(event) => updateSettingsRow(index, { deviceId: event.target.value })}
-                            placeholder="e.g. B8:F8:62:F6:BF:D8"
+                          <span>绑定设备</span>
+                          <select
+                            value={item.deviceId ?? ''}
+                            onChange={(event) => handleCardDeviceSelect(index, event.target.value)}
                             style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
-                          />
+                            disabled={deviceEntities.length === 0}
+                          >
+                            <option value="">请选择设备</option>
+                            {deviceEntities.map((device) => (
+                              <option key={device.id} value={device.id}>
+                                {device.name} ({device.deviceMac})
+                              </option>
+                            ))}
+                          </select>
+                          <span style={{ fontSize: '12px', color: 'rgba(0,0,0,0.45)' }}>
+                            当前 MAC：{item.deviceMac || '未选择'}
+                          </span>
                         </label>
 
                         <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
@@ -1612,6 +1821,178 @@ export function HomePage() {
                   <Button variant="primary" onClick={saveSettings} disabled={isSavingSettings}>
                     {isSavingSettings ? 'Saving...' : 'Save settings'}
                   </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isDeviceManagerOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1400,
+              }}
+              onClick={closeDeviceManager}
+            >
+              <div
+                className="hp-modal-content"
+                style={{
+                  backgroundColor: '#fff',
+                  padding: '28px',
+                  borderRadius: '10px',
+                  width: '94%',
+                  maxWidth: '900px',
+                  maxHeight: '88vh',
+                  overflowY: 'auto',
+                  boxShadow: '0 18px 36px rgba(0, 0, 0, 0.25)',
+                }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                  <div>
+                    <h2 style={{ margin: 0, marginBottom: '6px' }}>{editingDeviceId ? '编辑设备' : '新增设备'}</h2>
+                    <p style={{ margin: 0, fontSize: '13px', color: 'rgba(0,0,0,0.6)' }}>
+                      维护设备信息，确保首页卡片可以准确绑定。
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {editingDeviceId && (
+                      <Button variant="secondary" onClick={resetDeviceForm} disabled={isSavingDevice}>
+                        退出编辑
+                      </Button>
+                    )}
+                    <Button variant="secondary" onClick={resetDeviceForm} disabled={isSavingDevice}>
+                      新增设备
+                    </Button>
+                  </div>
+                </div>
+
+                {deviceModalError && (
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      marginBottom: '14px',
+                      backgroundColor: '#fee',
+                      border: '1px solid #fcc',
+                      borderRadius: '4px',
+                      color: '#c33',
+                      fontSize: '13px',
+                    }}
+                  >
+                    {deviceModalError}
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: '12px',
+                    marginBottom: '18px',
+                  }}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                    <span>设备名称</span>
+                    <input
+                      value={deviceFormValues.name}
+                      onChange={(event) => handleDeviceFormChange('name', event.target.value)}
+                      placeholder="如 老人床位 301"
+                      style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0,0,0,0.2)' }}
+                    />
+                  </label>
+
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                    <span>设备 MAC</span>
+                    <input
+                      value={deviceFormValues.deviceMac}
+                      onChange={(event) => handleDeviceFormChange('deviceMac', event.target.value)}
+                      placeholder="B8F862F6BFD8"
+                      style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0,0,0,0.2)', textTransform: 'uppercase' }}
+                    />
+                  </label>
+
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                    <span>设备类型</span>
+                    <select
+                      value={deviceFormValues.deviceType}
+                      onChange={(event) => handleDeviceFormChange('deviceType', event.target.value)}
+                      style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0,0,0,0.2)' }}
+                    >
+                      {DEVICE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px', gridColumn: '1 / -1' }}>
+                    <span>备注</span>
+                    <textarea
+                      value={deviceFormValues.description}
+                      onChange={(event) => handleDeviceFormChange('description', event.target.value)}
+                      placeholder="可填写安装位置、备注信息等"
+                      rows={2}
+                      style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0,0,0,0.2)', resize: 'vertical' }}
+                    />
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginBottom: '20px' }}>
+                  <Button variant="secondary" onClick={closeDeviceManager} disabled={isSavingDevice}>
+                    关闭
+                  </Button>
+                  <Button variant="primary" onClick={handleDeviceFormSubmit} disabled={isSavingDevice}>
+                    {isSavingDevice ? '保存中...' : editingDeviceId ? '更新设备' : '保存设备'}
+                  </Button>
+                </div>
+
+                <div>
+                  <h3 style={{ marginTop: 0, marginBottom: '10px', fontSize: '16px' }}>设备列表</h3>
+                  {deviceEntities.length === 0 ? (
+                    <div style={{ padding: '16px', border: '1px dashed rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '13px', color: 'rgba(0,0,0,0.6)' }}>
+                      暂无设备，请先添加。
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                        <thead>
+                          <tr style={{ backgroundColor: 'rgba(0,0,0,0.04)' }}>
+                            <th style={{ textAlign: 'left', padding: '8px 6px' }}>名称</th>
+                            <th style={{ textAlign: 'left', padding: '8px 6px' }}>MAC</th>
+                            <th style={{ textAlign: 'left', padding: '8px 6px' }}>类型</th>
+                            <th style={{ textAlign: 'left', padding: '8px 6px' }}>备注</th>
+                            <th style={{ textAlign: 'right', padding: '8px 6px' }}>操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deviceEntities.map((device) => (
+                            <tr key={device.id} style={{ borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
+                              <td style={{ padding: '10px 6px', fontWeight: 600 }}>{device.name}</td>
+                              <td style={{ padding: '10px 6px', fontFamily: 'monospace' }}>{device.deviceMac}</td>
+                              <td style={{ padding: '10px 6px' }}>{DEVICE_TYPE_LABELS[device.deviceType ?? DEFAULT_DEVICE_TYPE] ?? device.deviceType}</td>
+                              <td style={{ padding: '10px 6px', color: 'rgba(0,0,0,0.7)' }}>{device.description || '-'}</td>
+                              <td style={{ padding: '10px 6px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                  <Button variant="secondary" size="sm" onClick={() => startEditDevice(device)} disabled={isSavingDevice}>
+                                    编辑
+                                  </Button>
+                                  <Button variant="destructive" size="sm" onClick={() => handleDeviceDelete(device.id)} disabled={isSavingDevice}>
+                                    删除
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

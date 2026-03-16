@@ -26,6 +26,7 @@ func (s *sqlStore) List(ctx context.Context, query *homepagecards.GetHomePageCar
 func (s *sqlStore) Create(ctx context.Context, cmd *homepagecards.CreateHomePageCardCommand) (*homepagecards.HomePageCard, error) {
 	entity := &homepagecards.HomePageCard{
 		OrgID:        cmd.OrgID,
+		DeviceID:     cmd.DeviceID,
 		DeviceMAC:    cmd.DeviceMAC,
 		DeviceType:   cmd.DeviceType,
 		CardName:     cmd.CardName,
@@ -54,6 +55,7 @@ func (s *sqlStore) Update(ctx context.Context, cmd *homepagecards.UpdateHomePage
 			return homepagecards.ErrHomePageCardNotFound
 		}
 
+		entity.DeviceID = cmd.DeviceID
 		entity.DeviceMAC = cmd.DeviceMAC
 		entity.DeviceType = cmd.DeviceType
 		entity.CardName = cmd.CardName

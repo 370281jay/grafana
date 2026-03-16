@@ -14,6 +14,7 @@ var (
 type HomePageCard struct {
 	ID           int64     `json:"id" xorm:"pk autoincr 'id'" db:"id"`
 	OrgID        int64     `json:"orgId" xorm:"org_id" db:"org_id"`
+	DeviceID     int64     `json:"deviceId" xorm:"device_id" db:"device_id"`
 	DeviceMAC    string    `json:"deviceMac" xorm:"device_mac" db:"device_mac"`
 	DeviceType   string    `json:"deviceType" xorm:"device_type" db:"device_type"`
 	CardName     string    `json:"cardName" xorm:"card_name" db:"card_name"`
@@ -24,6 +25,7 @@ type HomePageCard struct {
 
 type CreateHomePageCardCommand struct {
 	OrgID        int64  `json:"orgId" xorm:"org_id"`
+	DeviceID     int64  `json:"deviceId" xorm:"device_id"`
 	DeviceMAC    string `json:"deviceMac" xorm:"device_mac"`
 	DeviceType   string `json:"deviceType" xorm:"device_type"`
 	CardName     string `json:"cardName" xorm:"card_name"`
@@ -46,6 +48,7 @@ func (cmd *CreateHomePageCardCommand) Validate() error {
 type UpdateHomePageCardCommand struct {
 	ID           int64  `json:"-"`
 	OrgID        int64  `json:"orgId" xorm:"org_id"`
+	DeviceID     int64  `json:"deviceId" xorm:"device_id"`
 	DeviceMAC    string `json:"deviceMac" xorm:"device_mac"`
 	DeviceType   string `json:"deviceType" xorm:"device_type"`
 	CardName     string `json:"cardName" xorm:"card_name"`

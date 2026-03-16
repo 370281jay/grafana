@@ -10,6 +10,7 @@ import (
 	"github.com/grafana/grafana/pkg/api/routing"
 	"github.com/grafana/grafana/pkg/middleware"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
+	"github.com/grafana/grafana/pkg/services/devices"
 	"github.com/grafana/grafana/pkg/services/homepagecards"
 	"github.com/grafana/grafana/pkg/web"
 )
@@ -38,6 +39,9 @@ func (hs *HTTPServer) createHomePageCard(c *contextmodel.ReqContext) response.Re
 	if err := web.Bind(c.Req, cmd); err != nil {
 		return response.Error(http.StatusBadRequest, "Invalid request body", err)
 	}
+	if resp := hs.populateCardDeviceMetadata(c, cmd.DeviceID, &cmd.DeviceMAC, &cmd.DeviceType); resp != nil {
+		return resp
+	}
 
 	card, err := hs.homePageCardService.Create(c.Req.Context(), cmd)
 	if err != nil {
@@ -59,6 +63,9 @@ func (hs *HTTPServer) updateHomePageCard(c *contextmodel.ReqContext) response.Re
 	}
 
 	cmd.ID = id
+	if resp := hs.populateCardDeviceMetadata(c, cmd.DeviceID, &cmd.DeviceMAC, &cmd.DeviceType); resp != nil {
+		return resp
+	}
 
 	card, err := hs.homePageCardService.Update(c.Req.Context(), cmd)
 	if err != nil {
@@ -84,6 +91,7 @@ func (hs *HTTPServer) deleteHomePageCard(c *contextmodel.ReqContext) response.Re
 
 type homePageCardDTO struct {
 	ID           int64  `json:"id"`
+	DeviceID     int64  `json:"deviceId"`
 	DeviceMAC    string `json:"deviceMac"`
 	DeviceType   string `json:"deviceType"`
 	CardName     string `json:"cardName"`
@@ -102,6 +110,7 @@ func toHomePageCardDTOs(cards []*homepagecards.HomePageCard) []homePageCardDTO {
 func toHomePageCardDTO(card *homepagecards.HomePageCard) homePageCardDTO {
 	dto := homePageCardDTO{
 		ID:           card.ID,
+		DeviceID:     card.DeviceID,
 		DeviceMAC:    card.DeviceMAC,
 		DeviceType:   card.DeviceType,
 		CardName:     card.CardName,
@@ -128,4 +137,24 @@ func homePageCardErrorResponse(err error) response.Response {
 	default:
 		return response.Error(http.StatusInternalServerError, "Failed to save home page card", err)
 	}
+}
+
+func (hs *HTTPServer) populateCardDeviceMetadata(c *contextmodel.ReqContext, deviceID int64, deviceMAC *string, deviceType *string) response.Response {
+	if deviceID == 0 {
+		return nil
+	}
+
+	device, err := hs.deviceService.Get(c.Req.Context(), &devices.GetDeviceQuery{OrgID: c.OrgID, ID: deviceID})
+	if err != nil {
+		return deviceErrorResponse(err)
+	}
+
+	if strings.TrimSpace(*deviceMAC) == "" {
+		*deviceMAC = device.DeviceMAC
+	}
+	if strings.TrimSpace(*deviceType) == "" {
+		*deviceType = device.DeviceType
+	}
+
+	return nil
 }

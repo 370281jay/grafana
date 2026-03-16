@@ -158,4 +158,5 @@ func (oss *OSSMigrations) AddMigration(mg *Migrator) {
 	ualert.AddStateFiredAtColumn(mg)
 
 	addHomePageCardMigrations(mg)
+	addDeviceMigrations(mg)
 }
