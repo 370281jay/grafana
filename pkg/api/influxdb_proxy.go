@@ -155,40 +155,24 @@ func parseFluxCSV(body []byte) ([]map[string]string, error) {
     return rows, nil
 }
 
-var (
-    fixedPeriodData      []map[string]string
-    fixedPeriodDataMutex sync.RWMutex
-    fixedPeriodLoaded    bool
-    fixedStart           = time.Date(2026, 3, 13, 9, 0, 0, 0, time.UTC)
-    fixedEnd             = time.Date(2026, 3, 13, 9, 5, 0, 0, time.UTC)
-    fixedDuration        = fixedEnd.Sub(fixedStart)
-)
-
 func (hs *HTTPServer) startVitalsCacheRefresh() {
     go func() {
-        hs.loadFixedPeriodData()
+        hs.refreshRealtimeVitals()
 
-        replayTicker := time.NewTicker(1 * time.Second)
-        defer replayTicker.Stop()
+        ticker := time.NewTicker(2 * time.Second)
+        defer ticker.Stop()
 
-        reloadTicker := time.NewTicker(10 * time.Second)
-        defer reloadTicker.Stop()
-
-        startPlayback := time.Now()
-
-        for {
-            select {
-            case <-replayTicker.C:
-                hs.replayVitalsCache(startPlayback)
-            case <-reloadTicker.C:
-                hs.loadFixedPeriodData()
-            }
+        for range ticker.C {
+            hs.refreshRealtimeVitals()
         }
     }()
 }
 
-func (hs *HTTPServer) loadFixedPeriodData() {
+func (hs *HTTPServer) refreshRealtimeVitals() {
     devices := hs.loadConfiguredDeviceIDs()
+    if len(devices) == 0 {
+        return
+    }
 
     filterParts := make([]string, 0, len(devices))
     for _, deviceID := range devices {
@@ -196,37 +180,28 @@ func (hs *HTTPServer) loadFixedPeriodData() {
     }
     deviceFilter := strings.Join(filterParts, " or ")
 
-        fluxQuery := fmt.Sprintf(`from(bucket: "%s")
-    |> range(start: %s, stop: %s)
+    fluxQuery := fmt.Sprintf(`from(bucket: "%s")
+    |> range(start: -1m)
     |> filter(fn: (r) => r["_measurement"] == "device_data")
     |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human")
-    |> filter(fn: (r) => %s)`,
+    |> filter(fn: (r) => %s)
+    |> last()`,
         defaultBucket,
-        fixedStart.Format(time.RFC3339),
-        fixedEnd.Format(time.RFC3339),
         deviceFilter,
     )
 
-    hs.log.Info("Loading fixed period data from InfluxDB", "devices", strings.Join(devices, ","), "start", fixedStart.Format(time.RFC3339), "stop", fixedEnd.Format(time.RFC3339))
-
-    for retries := 0; retries < 5; retries++ {
-        data, err := hs.executeInfluxQuery(fluxQuery)
-        if err != nil {
-            hs.log.Error("Failed to load fixed period data, retrying...", "error", err, "retry", retries+1)
-            time.Sleep(3 * time.Second)
-            continue
-        }
-
-        fixedPeriodDataMutex.Lock()
-        fixedPeriodData = data
-        fixedPeriodLoaded = true
-        fixedPeriodDataMutex.Unlock()
-
-        hs.log.Info("Fixed period data loaded successfully", "recordCount", len(data))
+    data, err := hs.executeInfluxQuery(fluxQuery)
+    if err != nil {
+        hs.log.Error("Failed to refresh realtime vitals", "error", err)
         return
     }
 
-    hs.log.Error("Failed to load fixed period data after all retries")
+    vitalsCacheMutex.Lock()
+    vitalsCache = CachedVitalsData{
+        Results:   data,
+        Timestamp: time.Now().UnixMilli(),
+    }
+    vitalsCacheMutex.Unlock()
 }
 
 type homePageCardDeviceRow struct {
@@ -273,96 +248,6 @@ func (hs *HTTPServer) loadConfiguredDeviceIDs() []string {
     }
 
     return devices
-}
-
-func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
-    fixedPeriodDataMutex.RLock()
-    if !fixedPeriodLoaded || len(fixedPeriodData) == 0 {
-        fixedPeriodDataMutex.RUnlock()
-        return
-    }
-    allData := fixedPeriodData
-    fixedPeriodDataMutex.RUnlock()
-
-    elapsed := time.Since(startPlayback)
-    offset := elapsed % fixedDuration
-
-    virtualNow := fixedStart.Add(offset)
-    windowStart := virtualNow.Add(-5 * time.Second)
-
-    var matched []map[string]string
-    for _, row := range allData {
-        timeValue, ok := row["_time"]
-        if !ok {
-            continue
-        }
-
-        parsedTime, err := time.Parse(time.RFC3339Nano, timeValue)
-        if err != nil {
-            parsedTime, err = time.Parse(time.RFC3339, timeValue)
-            if err != nil {
-                continue
-            }
-        }
-
-        if (parsedTime.Equal(windowStart) || parsedTime.After(windowStart)) && (parsedTime.Equal(virtualNow) || parsedTime.Before(virtualNow)) {
-            matched = append(matched, row)
-        }
-    }
-
-    if len(matched) == 0 {
-        matched = findClosestRecords(allData, virtualNow)
-    }
-
-    vitalsCacheMutex.Lock()
-    vitalsCache = CachedVitalsData{
-        Results:   matched,
-        Timestamp: time.Now().UnixMilli(),
-    }
-    vitalsCacheMutex.Unlock()
-
-    hs.log.Debug("Vitals cache replayed", "virtualTime", virtualNow.Format(time.RFC3339), "matchedRecords", len(matched), "offset", offset.String())
-}
-
-func findClosestRecords(allData []map[string]string, virtualNow time.Time) []map[string]string {
-    type key struct {
-        deviceID string
-        field    string
-    }
-
-    closest := make(map[key]map[string]string)
-    closestDiff := make(map[key]time.Duration)
-
-    for _, row := range allData {
-        timeValue, ok := row["_time"]
-        if !ok {
-            continue
-        }
-
-        parsedTime, err := time.Parse(time.RFC3339Nano, timeValue)
-        if err != nil {
-            parsedTime, err = time.Parse(time.RFC3339, timeValue)
-            if err != nil {
-                continue
-            }
-        }
-
-        pair := key{deviceID: row["device_id"], field: row["_field"]}
-        diff := virtualNow.Sub(parsedTime)
-        if diff < 0 {
-            diff = -diff
-        }
-        if previous, exists := closestDiff[pair]; !exists || diff < previous {
-            closestDiff[pair] = diff
-            closest[pair] = row
-        }
-    }
-
-    result := make([]map[string]string, 0, len(closest))
-    for _, row := range closest {
-        result = append(result, row)
-    }
-    return result
 }
 
 func (hs *HTTPServer) executeInfluxQuery(fluxQuery string) ([]map[string]string, error) {

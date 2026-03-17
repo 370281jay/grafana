@@ -122,7 +122,7 @@ interface DeviceVitals extends DeviceMetrics {
   trends: Record<MetricKey, MetricTrend>;
   // 标记哪些字段当前是"保持显示"的旧值（空白帧时不清零）
   staleFields: Partial<Record<MetricKey, boolean>>;
-  fallDetected: boolean;
+  fallDetected: boolean | null;
   fallTimerSeconds: number | null;
   humanPresence: boolean | null;
 }
@@ -1157,7 +1157,7 @@ export function HomePage() {
   );
 
   const renderFallDetectionCard = (device: DeviceVitals, dashboardLink: string | null) => {
-    const fallStatus = device.fallDetected ? '检测到跌倒' : '正常';
+    const fallStatus = device.fallDetected == null ? '-' : device.fallDetected ? '检测到跌倒' : '正常';
     const fallStatusColor = device.fallDetected ? '#d63342' : '#1f6f43';
     const fallTimerText = formatFallTimer(device.fallTimerSeconds);
     const humanStatus = device.humanPresence == null ? '-' : device.humanPresence ? '有人' : '无人';
