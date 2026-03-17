@@ -125,6 +125,7 @@ interface DeviceVitals extends DeviceMetrics {
   fallDetected: boolean | null;
   fallTimerSeconds: number | null;
   humanPresence: boolean | null;
+  deviceName?: string;
 }
 
 type DashboardSummary = {
@@ -327,7 +328,7 @@ const createEmptyMetrics = (): DeviceMetrics => ({
   movementAmplitude: null,
 });
 
-const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
+const buildEmptyDeviceVitals = (config: DeviceConfig, deviceName?: string): DeviceVitals => ({
   deviceId: config.deviceId ?? null,
   deviceMac: config.deviceMac ?? '',
   room: config.room,
@@ -337,9 +338,10 @@ const buildEmptyDeviceVitals = (config: DeviceConfig): DeviceVitals => ({
   fallRisk: false,
   trends: createEmptyTrends(),
   staleFields: {},
-  fallDetected: false,
+  fallDetected: null, // 默认为 null，表示无数据
   fallTimerSeconds: null,
   humanPresence: null,
+  deviceName,
 });
 
 export function HomePage() {
@@ -544,8 +546,10 @@ export function HomePage() {
 
         const updatedVitals: DeviceVitals[] = deviceConfigs.map((config: DeviceConfig) => {
           const deviceKey = config.deviceMac;
+          const deviceName = deviceEntities.find((d) => d.id === config.deviceId)?.name;
+
           if (!deviceKey) {
-            return buildEmptyDeviceVitals(config);
+            return buildEmptyDeviceVitals(config, deviceName);
           }
 
           const metricsWithRisk = groupedMetrics.get(deviceKey) ?? {
@@ -604,11 +608,17 @@ export function HomePage() {
 
           const deviceType = config.deviceType ?? DEFAULT_DEVICE_TYPE;
           const isFallDevice = deviceType === 'fall-detection';
-          const fallDetected = isFallDevice ? fallFlag !== null && fallFlag >= 0.5 : fallRiskDetected;
+
+          // 若 fallFlag 为 null，则 fallDetected 也为 null
+          const fallDetected = isFallDevice 
+            ? (fallFlag !== null ? fallFlag >= 0.5 : null) 
+            : fallRiskDetected;
+
           const fallTimerSeconds = isFallDevice ? fallCount ?? null : null;
           const humanPresenceValue = humanPresence == null ? null : humanPresence >= 0.5;
 
-          const fallRisk = isFallDevice ? fallDetected : fallRiskDetected;
+          // fallRisk 必须是 boolean，用于触发报警，null 视为 false
+          const fallRisk = isFallDevice ? (fallDetected === true) : fallRiskDetected;
 
           const occupied = isFallDevice
             ? humanPresenceValue ?? false
@@ -630,6 +640,7 @@ export function HomePage() {
             fallDetected,
             fallTimerSeconds,
             humanPresence: isFallDevice ? humanPresenceValue : null,
+            deviceName,
           };
         });
 
@@ -647,7 +658,7 @@ export function HomePage() {
         }
       }
     },
-    [deviceConfigs, hasLoadedOnce]
+    [deviceConfigs, hasLoadedOnce, deviceEntities]
   );
 
   useEffect(() => {
@@ -660,10 +671,13 @@ export function HomePage() {
   }, [fetchDevices]);
 
   useEffect(() => {
-  setDeviceVitals(deviceConfigs.map((config: DeviceConfig) => buildEmptyDeviceVitals(config)));
+  setDeviceVitals(deviceConfigs.map((config: DeviceConfig) => {
+      const name = deviceEntities.find((d) => d.id === config.deviceId)?.name;
+      return buildEmptyDeviceVitals(config, name);
+    }));
     previousMetricsRef.current = new Map();
     lastKnownMetricsRef.current = new Map();
-  }, [deviceConfigs]);
+  }, [deviceConfigs, deviceEntities]);
 
   useEffect(() => {
     fetchVitals({ showIndicator: true });
@@ -984,6 +998,7 @@ export function HomePage() {
       await Promise.all([fetchDashboards(), fetchCardConfigs()]);
       setSettingsNotice('Card settings saved.');
       setSettingsModalOpen(false);
+      setTimeout(() => setSettingsNotice(null), 3000);
     } catch (err) {
       console.error('Failed to save home page card settings:', err);
       setSettingsError(`Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -1147,7 +1162,7 @@ export function HomePage() {
   const renderCardHeader = (device: DeviceVitals, dashboardLink: string | null) => (
     <div className="hp-card-header" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       <span style={{ fontSize: '18px', fontWeight: 600 }}>{formatRoomLabel(device.room)}</span>
-      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备记录 ID: {device.deviceId ?? '未绑定'}</span>
+      <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备名称: {device.deviceName || '未绑定'}</span>
       <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>设备 MAC: {device.deviceMac || '-'}</span>
       <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
         设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
@@ -1157,13 +1172,42 @@ export function HomePage() {
   );
 
   const renderFallDetectionCard = (device: DeviceVitals, dashboardLink: string | null) => {
-    const fallStatus = device.fallDetected == null ? '-' : device.fallDetected ? '检测到跌倒' : '正常';
-    const fallStatusColor = device.fallDetected ? '#d63342' : '#1f6f43';
+    const isFall = device.fallDetected;
+    
+    let fallStatusText = '正常';
+    let statusBg = '#f6ffed';
+    let statusBorder = '#b7eb8f';
+    let statusColor = '#389e0d';
+
+    if (isFall === null) {
+      fallStatusText = '设备未连接';
+      statusBg = 'rgba(0, 0, 0, 0.04)';
+      statusBorder = 'rgba(0, 0, 0, 0.15)';
+      statusColor = 'rgba(0, 0, 0, 0.45)';
+    } else if (isFall) {
+      fallStatusText = '检测到跌倒';
+      statusBg = '#fff1f0';
+      statusBorder = '#ffccc7';
+      statusColor = '#cf1322';
+    }
+
     const fallTimerText = formatFallTimer(device.fallTimerSeconds);
     const humanStatus = device.humanPresence == null ? '-' : device.humanPresence ? '有人' : '无人';
 
-    const cardBackgroundColor = device.fallDetected ? 'rgba(220, 53, 69, 0.15)' : 'rgba(0, 0, 0, 0.02)';
-    const cardBorderColor = device.fallDetected ? 'rgba(220, 53, 69, 0.4)' : 'rgba(0, 0, 0, 0.08)';
+    const cardBackgroundColor = '#ffffff'; 
+    const cardBorderColor = isFall === true ? '#ffccc7' : 'rgba(0, 0, 0, 0.1)';
+    // 阴影效果减少平面感
+    const cardShadow = isFall === true ? '0 4px 12px rgba(255, 77, 79, 0.15)' : '0 2px 8px rgba(0, 0, 0, 0.04)';
+
+    const itemStyle: CSSProperties = {
+      flex: 1, // 均分剩余空间
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '0 16px',
+      borderRadius: '6px',
+      border: '1px solid',
+    };
 
     return (
       <div
@@ -1174,68 +1218,55 @@ export function HomePage() {
         onClick={dashboardLink ? () => handleCardClick(dashboardLink) : undefined}
         onKeyDown={dashboardLink ? (event) => handleCardKeyDown(event, dashboardLink) : undefined}
         style={{
-          padding: '12px',
+          padding: '16px',
           backgroundColor: cardBackgroundColor,
-          borderRadius: '6px',
+          borderRadius: '8px',
           border: `1px solid ${cardBorderColor}`,
+          boxShadow: cardShadow,
           display: 'flex',
           flexDirection: 'column',
-          gap: '10px',
+          gap: '12px',
           cursor: dashboardLink ? 'pointer' : 'default',
-          boxShadow: device.fallDetected ? '0 0 12px rgba(214, 51, 66, 0.35)' : undefined,
+          transition: 'all 0.2s ease',
+          minHeight: '240px', // 稍微增加高度以适应三行布局
         }}
       >
         {renderCardHeader(device, dashboardLink)}
-        <div
-          className="hp-fall-status"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-            gap: '8px',
-          }}
-        >
-          <div
-            style={{
-              padding: '10px',
-              borderRadius: '4px',
-              backgroundColor: 'rgba(0, 0, 0, 0.03)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '6px',
-            }}
-          >
-            <span style={{ fontSize: '14px', fontWeight: 600 }}>跌倒状态</span>
-            <span style={{ fontSize: '20px', fontWeight: 700, color: fallStatusColor }}>{fallStatus}</span>
-          </div>
-          <div
-            style={{
-              padding: '10px',
-              borderRadius: '4px',
-              backgroundColor: 'rgba(0, 0, 0, 0.03)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '6px',
-            }}
-          >
-            <span style={{ fontSize: '14px', fontWeight: 600 }}>跌倒计时</span>
-            <span style={{ fontSize: '20px', fontWeight: 700 }}>{fallTimerText}</span>
-          </div>
-          <div
-            style={{
-              padding: '10px',
-              borderRadius: '4px',
-              backgroundColor: 'rgba(0, 0, 0, 0.03)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '6px',
-            }}
-          >
-            <span style={{ fontSize: '14px', fontWeight: 600 }}>有人状态</span>
-            <span style={{ fontSize: '20px', fontWeight: 700 }}>{showPlaceholder ? '-' : humanStatus}</span>
-          </div>
-        </div>
+        
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, marginTop: '8px' }}>
+            {/* 1/3: 状态 */}
+            <div style={{
+                ...itemStyle,
+                backgroundColor: statusBg,
+                borderColor: statusBorder,
+                color: statusColor,
+            }}>
+                <span style={{ fontSize: '14px', fontWeight: 600 }}>状态</span>
+                <span style={{ fontSize: '18px', fontWeight: 800 }}>{fallStatusText}</span>
+            </div>
 
-        {/* 跌倒卡片仅显示：有人 / 跌倒 / 跌倒计时（不显示心率/呼吸等） */}
+            {/* 1/3: 跌倒计时 */}
+            <div style={{
+                ...itemStyle,
+                backgroundColor: '#fafafa',
+                borderColor: '#f0f0f0',
+            }}>
+                <span style={{ fontSize: '14px', color: '#8c8c8c' }}>跌倒计时</span>
+                <span style={{ fontSize: '18px', fontWeight: 600, color: '#333' }}>{fallTimerText}</span>
+            </div>
+
+            {/* 1/3: 人员监测 */}
+            <div style={{
+                ...itemStyle,
+                backgroundColor: '#fafafa',
+                borderColor: '#f0f0f0',
+            }}>
+                <span style={{ fontSize: '14px', color: '#8c8c8c' }}>人员监测</span>
+                <span style={{ fontSize: '18px', fontWeight: 600, color: '#333' }}>
+                    {showPlaceholder ? '-' : humanStatus}
+                </span>
+            </div>
+        </div>
       </div>
     );
   };
@@ -1982,7 +2013,7 @@ export function HomePage() {
                   overflowY: 'auto',
                   boxShadow: '0 18px 36px rgba(0, 0, 0, 0.25)',
                 }}
-              >
+             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ margin: 0, marginBottom: '6px' }}>{editingDeviceId ? '编辑设备' : '新增设备'}</h2>
