@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # to maintain formatting of multiline commands in vscode, add the following to settings.json:
 # "docker.languageserver.formatter.ignoreMultilineInstructions": true
 
@@ -28,7 +26,9 @@ ENV NODE_OPTIONS=--max_old_space_size=8000
 
 WORKDIR /tmp/grafana
 
-RUN apk add --no-cache make build-base python3
+# 替换为国内镜像源 (阿里云)
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache make build-base python3
 
 COPY package.json project.json nx.json yarn.lock .yarnrc.yml ./
 COPY .yarn .yarn
@@ -60,12 +60,18 @@ RUN yarn ${JS_YARN_BUILD_FLAG}
 # Golang build stage
 FROM ${GO_IMAGE} AS go-builder
 
+ENV GOTOOLCHAIN=auto
+# 配置 Go 代理加速依赖下载
+ENV GOPROXY=https://goproxy.cn,direct
+
 ARG COMMIT_SHA=""
 ARG BUILD_BRANCH=""
 ARG GO_BUILD_TAGS="oss"
 ARG WIRE_TAGS="oss"
 
 RUN if grep -i -q alpine /etc/issue; then \
+  # 同样为 Go 阶段替换镜像源
+  sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
   apk add --no-cache \
   # This is required to allow building on arm64 due to https://github.com/golang/go/issues/22040
   binutils-gold \
@@ -132,6 +138,7 @@ COPY .github .github
 
 ENV COMMIT_SHA=${COMMIT_SHA}
 ENV BUILD_BRANCH=${BUILD_BRANCH}
+
 
 RUN make build-go GO_BUILD_TAGS=${GO_BUILD_TAGS} WIRE_TAGS=${WIRE_TAGS}
 

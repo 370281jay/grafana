@@ -1200,7 +1200,7 @@ export function HomePage() {
     const cardShadow = isFall === true ? '0 4px 12px rgba(255, 77, 79, 0.15)' : '0 2px 8px rgba(0, 0, 0, 0.04)';
 
     const itemStyle: CSSProperties = {
-      flex: 1, // 均分剩余空间
+      height: '96px', // 固定高度，确保在没有由于外部 Flex 撑开时保持一致
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
@@ -1305,8 +1305,18 @@ export function HomePage() {
     <Page navId="home">
       {/* ========== 响应式样式 ========== */}
       <style>{`
+        .hp-card,
+        .hp-card-fall {
+          min-height: 240px;
+          height: 100%;
+        }
+
         /* ---------- 手机竖屏 (≤ 576px) ---------- */
         @media (max-width: 576px) {
+          .hp-card,
+          .hp-card-fall {
+            min-height: 220px;
+          }
           .hp-root {
             padding: 8px 6px 16px 6px !important;
           }
@@ -1364,6 +1374,10 @@ export function HomePage() {
 
         /* ---------- 手机横屏 / 小平板 (577px – 768px) ---------- */
         @media (min-width: 577px) and (max-width: 768px) {
+          .hp-card,
+          .hp-card-fall {
+            min-height: 230px;
+          }
           .hp-title {
             font-size: 30px !important;
           }
@@ -1377,6 +1391,10 @@ export function HomePage() {
 
         /* ---------- 平板 (769px – 1024px) ---------- */
         @media (min-width: 769px) and (max-width: 1024px) {
+          .hp-card,
+          .hp-card-fall {
+            min-height: 240px;
+          }
           .hp-title {
             font-size: 36px !important;
           }
@@ -1879,11 +1897,11 @@ export function HomePage() {
                           }}
                         >
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                            <span>Card name</span>
+                            <span>房间名称</span>
                             <input
                               value={item.room}
                               onChange={(event) => updateSettingsRow(index, { room: event.target.value })}
-                              placeholder="e.g. Room 2"
+                              placeholder="例如：房间 1"
                               style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
                             />
                           </label>
@@ -1914,7 +1932,7 @@ export function HomePage() {
                           </label>
 
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                            <span>Device type</span>
+                            <span>设备类型</span>
                             <select
                               value={item.deviceType ?? DEFAULT_DEVICE_TYPE}
                               onChange={(event) => updateSettingsRow(index, { deviceType: event.target.value })}
@@ -1929,7 +1947,7 @@ export function HomePage() {
                           </label>
 
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                            <span>Dashboard</span>
+                            <span>仪表板</span>
                             <select
                               value={dashboardSelectValue}
                               onChange={(event) => {
@@ -1941,7 +1959,7 @@ export function HomePage() {
                               }}
                               style={dropdownStyle}
                             >
-                              <option value="">Unbound</option>
+                              <option value="">未绑定</option>
                               {!hasDashboardOption && dashboardSelectValue && (
                                 <option value={dashboardSelectValue}>
                                   {item.dashboardUrl || `${dashboardSelectValue}（未找到）`}
@@ -1961,7 +1979,7 @@ export function HomePage() {
                             Current dashboard UID: {item.dashboardUid || 'Unbound'}
                           </span> */}
                           <Button variant="destructive" size="sm" onClick={() => removeSettingsRow(index)}>
-                            Delete
+                            删除
                           </Button>
                         </div>
                       </div>
@@ -1975,10 +1993,10 @@ export function HomePage() {
                     onClick={() => setSettingsModalOpen(false)}
                     disabled={isSavingSettings}
                   >
-                    Cancel
+                    取消
                   </Button>
                   <Button variant="primary" onClick={saveSettings} disabled={isSavingSettings}>
-                    {isSavingSettings ? 'Saving...' : 'Save settings'}
+                    {isSavingSettings ? '保存中...' : '保存设置'}
                   </Button>
                 </div>
               </div>
