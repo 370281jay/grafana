@@ -183,7 +183,7 @@ func (hs *HTTPServer) refreshRealtimeVitals() {
     fluxQuery := fmt.Sprintf(`from(bucket: "%s")
     |> range(start: -1m)
     |> filter(fn: (r) => r["_measurement"] == "device_data")
-    |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human")
+    |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
     |> filter(fn: (r) => %s)
     |> last()`,
         defaultBucket,

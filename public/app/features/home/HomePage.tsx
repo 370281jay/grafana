@@ -18,6 +18,7 @@ interface InfluxRow {
   device_id?: string;
   _field?: string;
   _value?: number | string | null;
+  _time?: string;
 }
 
 interface InfluxQueryResponse {
@@ -48,6 +49,7 @@ type DeviceMetrics = {
   respirationRate: number | null;
   distanceMin: number | null;
   movementAmplitude: number | null;
+  spo2: number | null;
 };
 
 // 每个指标的"最后有效值"及其时间戳，用于空白帧保持显示
@@ -61,6 +63,7 @@ type DeviceLastKnownMetrics = {
   respirationRate: MetricLastKnown | null;
   distanceMin: MetricLastKnown | null;
   movementAmplitude: MetricLastKnown | null;
+  spo2: MetricLastKnown | null;
 };
 
 // 超过该时长未收到有效数据，才真正将显示值置空（毫秒）
@@ -74,6 +77,7 @@ const createEmptyTrends = (): Record<MetricKey, MetricTrend> => ({
   respirationRate: 'same',
   distanceMin: 'same',
   movementAmplitude: 'same',
+  spo2: 'same',
 });
 
 const calculateTrends = (
@@ -109,6 +113,7 @@ const calculateTrends = (
     respirationRate: trendFor('respirationRate'),
     distanceMin: trendFor('distanceMin'),
     movementAmplitude: trendFor('movementAmplitude'),
+    spo2: trendFor('spo2'),
   };
 };
 
@@ -125,6 +130,7 @@ interface DeviceVitals extends DeviceMetrics {
   fallDetected: boolean | null;
   fallTimerSeconds: number | null;
   humanPresence: boolean | null;
+  lastValidFrameTime: number | null;
   deviceName?: string;
 }
 
@@ -166,15 +172,17 @@ const DEFAULT_DEVICE_TYPE = 'heart-rate';
 
 const DEVICE_TYPE_OPTIONS = [
   { value: 'heart-rate', label: '心率检测' },
+  { value: 'blood-oxygen', label: '血氧检测' },
   { value: 'fall-detection', label: '跌倒检测' },
 ];
 
 const DEVICE_TYPE_LABELS: Record<string, string> = {
   'heart-rate': '心率检测',
+  'blood-oxygen': '血氧检测',
   'fall-detection': '跌倒检测',
 };
 
-type DeviceFilterValue = 'all' | 'heart-rate' | 'fall-detection';
+type DeviceFilterValue = 'all' | 'heart-rate' | 'blood-oxygen' | 'fall-detection';
 
 const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
 
@@ -235,13 +243,20 @@ const formatFallTimer = (value: number | null): string => {
   return `${mm}:${ss}`;
 };
 
+const formatFrameTime = (value: number | null): string => {
+  if (value === null || Number.isNaN(value)) {
+    return '-';
+  }
+  return new Date(value).toLocaleTimeString();
+};
+
 // 仿照 Python 脚本中的 Flux 查询语句
 const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
   const deviceFilter = buildDeviceFilter(devices);
   return `from(bucket: "${bucket}")
   |> range(start: -3s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
-  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human")
+  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
   |> filter(fn: (r) => ${deviceFilter})`;
 };
 
@@ -250,6 +265,12 @@ type DeviceMetricsWithRisk = DeviceMetrics & {
   fallFlag?: number | null;
   fallCount?: number | null;
   humanPresence?: number | null;
+  heartRateValid?: boolean | null;
+  spo2Valid?: boolean | null;
+  heartRateTime?: number | null;
+  spo2Time?: number | null;
+  heartRateValidTime?: number | null;
+  spo2ValidTime?: number | null;
 };
 
 const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, DeviceMetricsWithRisk> => {
@@ -260,6 +281,7 @@ const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, Device
     const deviceIdRaw = row?.device_id;
     const fieldRaw = row?._field;
     const rawValue = row?._value;
+    const timeRaw = row?._time;
 
     const deviceId = typeof deviceIdRaw === 'string' ? deviceIdRaw.trim() : '';
     const field = typeof fieldRaw === 'string' ? fieldRaw.trim() : '';
@@ -279,7 +301,16 @@ const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, Device
       fallFlag: null,
       fallCount: null,
       humanPresence: null,
+      heartRateValid: null,
+      spo2Valid: null,
+      heartRateTime: null,
+      spo2Time: null,
+      heartRateValidTime: null,
+      spo2ValidTime: null,
     };
+
+    const parsedTime = typeof timeRaw === 'string' ? Date.parse(timeRaw) : Number.NaN;
+    const rowTime = Number.isNaN(parsedTime) ? null : parsedTime;
 
     // ✅ 检查体动值是否 > 900
     if (field === 'movement_amplitude' && numericValue > 800) {
@@ -289,6 +320,11 @@ const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, Device
     switch (field) {
       case 'heart_rate_bpm':
         metrics.heartRate = numericValue;
+        metrics.heartRateTime = rowTime;
+        break;
+      case 'heart_rate':
+        metrics.heartRate = numericValue;
+        metrics.heartRateTime = rowTime;
         break;
       case 'respiration_bpm':
         metrics.respirationRate = numericValue;
@@ -298,6 +334,18 @@ const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, Device
         break;
       case 'movement_amplitude':
         metrics.movementAmplitude = numericValue;
+        break;
+      case 'spo2':
+        metrics.spo2 = numericValue;
+        metrics.spo2Time = rowTime;
+        break;
+      case 'heart_rate_valid':
+        metrics.heartRateValid = numericValue >= 0.5;
+        metrics.heartRateValidTime = rowTime;
+        break;
+      case 'spo2_valid':
+        metrics.spo2Valid = numericValue >= 0.5;
+        metrics.spo2ValidTime = rowTime;
         break;
       case 'fall':
         metrics.fallFlag = numericValue;
@@ -326,6 +374,7 @@ const createEmptyMetrics = (): DeviceMetrics => ({
   respirationRate: null,
   distanceMin: null,
   movementAmplitude: null,
+  spo2: null,
 });
 
 const buildEmptyDeviceVitals = (config: DeviceConfig, deviceName?: string): DeviceVitals => ({
@@ -341,6 +390,7 @@ const buildEmptyDeviceVitals = (config: DeviceConfig, deviceName?: string): Devi
   fallDetected: null, // 默认为 null，表示无数据
   fallTimerSeconds: null,
   humanPresence: null,
+  lastValidFrameTime: null,
   deviceName,
 });
 
@@ -383,15 +433,17 @@ export function HomePage() {
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
   // 记录每个设备各指标的最后有效值和时间戳，用于空白帧时保持显示
   const lastKnownMetricsRef = useRef<Map<string, DeviceLastKnownMetrics>>(new Map());
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const alarmPlayCountRef = useRef(0);
+  const lastValidFrameRef = useRef<Map<string, number>>(new Map());
   const alarmTimeoutRef = useRef<number | null>(null); // ✅ 添加
+  const speechSessionRef = useRef(0);
+  const suppressInterruptedRef = useRef(false);
 
   const showPlaceholder = !hasLoadedOnce && loading;
   const deviceFilterOptions: Array<{ value: DeviceFilterValue; label: string }> = useMemo(
     () => [
       { value: 'all', label: '全部设备' },
       { value: 'heart-rate', label: '心率检测' },
+      { value: 'blood-oxygen', label: '血氧检测' },
       { value: 'fall-detection', label: '跌倒检测' },
     ],
     []
@@ -578,14 +630,25 @@ export function HomePage() {
             respirationRate: null,
             distanceMin: null,
             movementAmplitude: null,
+            spo2: null,
           };
 
           const staleFields: Partial<Record<MetricKey, boolean>> = {};
-          const STALE_KEYS: MetricKey[] = ['heartRate', 'respirationRate', 'distanceMin', 'movementAmplitude'];
+          const STALE_KEYS: MetricKey[] = ['heartRate', 'respirationRate', 'distanceMin', 'movementAmplitude', 'spo2'];
           const metrics: DeviceMetrics = { ...rawMetrics };
 
+          const heartRateValid = metricsWithRisk.heartRateValid ?? true;
+          const spo2Valid = metricsWithRisk.spo2Valid ?? true;
+
+          if (!heartRateValid) {
+            metrics.heartRate = null;
+          }
+          if (!spo2Valid) {
+            metrics.spo2 = null;
+          }
+
           STALE_KEYS.forEach((key) => {
-            const rawVal = rawMetrics[key];
+            const rawVal = metrics[key];
             if (rawVal !== null && !Number.isNaN(rawVal)) {
               // 本帧有有效值 → 更新 lastKnown
               deviceLastKnown[key] = { value: rawVal, timestamp: now };
@@ -608,6 +671,17 @@ export function HomePage() {
 
           const deviceType = config.deviceType ?? DEFAULT_DEVICE_TYPE;
           const isFallDevice = deviceType === 'fall-detection';
+          const isBloodOxygenDevice = deviceType === 'blood-oxygen';
+
+          let lastValidFrameTime = lastValidFrameRef.current.get(deviceKey) ?? null;
+          if (isBloodOxygenDevice && heartRateValid && spo2Valid) {
+            const heartRateTime = metricsWithRisk.heartRateTime ?? metricsWithRisk.heartRateValidTime ?? null;
+            const spo2Time = metricsWithRisk.spo2Time ?? metricsWithRisk.spo2ValidTime ?? null;
+            if (heartRateTime !== null && spo2Time !== null) {
+              lastValidFrameTime = Math.max(heartRateTime, spo2Time);
+              lastValidFrameRef.current.set(deviceKey, lastValidFrameTime);
+            }
+          }
 
           // 若 fallFlag 为 null，则 fallDetected 也为 null
           const fallDetected = isFallDevice 
@@ -622,7 +696,10 @@ export function HomePage() {
 
           const occupied = isFallDevice
             ? humanPresenceValue ?? false
-            : metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
+            : isBloodOxygenDevice
+              ? (metrics.heartRate !== null && !Number.isNaN(metrics.heartRate)) ||
+                (metrics.spo2 !== null && !Number.isNaN(metrics.spo2))
+              : metrics.heartRate !== null && !Number.isNaN(metrics.heartRate);
 
           return {
             deviceId: config.deviceId ?? null,
@@ -633,6 +710,7 @@ export function HomePage() {
             respirationRate: metrics.respirationRate,
             distanceMin: metrics.distanceMin,
             movementAmplitude: metrics.movementAmplitude,
+            spo2: metrics.spo2,
             occupied,
             fallRisk,
             trends,
@@ -640,6 +718,7 @@ export function HomePage() {
             fallDetected,
             fallTimerSeconds,
             humanPresence: isFallDevice ? humanPresenceValue : null,
+            lastValidFrameTime: isBloodOxygenDevice ? lastValidFrameTime : null,
             deviceName,
           };
         });
@@ -677,6 +756,7 @@ export function HomePage() {
     }));
     previousMetricsRef.current = new Map();
     lastKnownMetricsRef.current = new Map();
+    lastValidFrameRef.current = new Map();
   }, [deviceConfigs, deviceEntities]);
 
   useEffect(() => {
@@ -687,83 +767,101 @@ export function HomePage() {
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
-  //增加房间号映射 
-  const alarmSoundMap = useMemo<Record<string, string>>(
-    () => ({
-      '1': '/public/sounds/room1.mp3',
-      '2': '/public/sounds/room2.mp3',
-      '3': '/public/sounds/room3.mp3',
-      '4': '/public/sounds/room4.mp3',
-    }),
-    []
-  );
-
   const playMultipleAlarmSounds = useCallback((roomIds: string[]) => {
+    if (!roomIds.length) {
+      return;
+    }
+
+    if (!('speechSynthesis' in window)) {
+      console.warn('当前浏览器不支持语音合成。');
+      return;
+    }
+
+    if (alarmTimeoutRef.current !== null) {
+      window.clearTimeout(alarmTimeoutRef.current);
+      alarmTimeoutRef.current = null;
+    }
+
+    speechSessionRef.current += 1;
+    const sessionId = speechSessionRef.current;
+    suppressInterruptedRef.current = true;
+    window.speechSynthesis.cancel();
+    alarmTimeoutRef.current = window.setTimeout(() => {
+      suppressInterruptedRef.current = false;
+      if (speechSessionRef.current === sessionId) {
+        speakNext();
+      }
+    }, 80);
+
     let index = 0;
     let loopCount = 0;
     const MAX_LOOPS = 10;
-    
-    const playNext = () => {
+
+    const speakNext = () => {
+      if (speechSessionRef.current !== sessionId) {
+        return;
+      }
       if (loopCount >= MAX_LOOPS) {
         return;
       }
 
       if (index < roomIds.length) {
         const roomId = roomIds[index];
-        const audioFilePath = alarmSoundMap[roomId] ?? '/public/sounds/room1.mp3';
+        const utterance = new SpeechSynthesisUtterance(`${formatRoomLabel(roomId)}检测到摔倒风险`);
+        utterance.lang = 'zh-CN';
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 1;
 
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.currentTime = 0;
-        }
-
-        const audio = new Audio(audioFilePath);
-        const volume = 0.9;
-        audio.volume = Math.min(1, Math.max(0, volume));
-
-        audio.onended = () => {
-          if (audioRef.current === audio) {
-            audioRef.current = null;
+        utterance.onend = () => {
+          if (speechSessionRef.current !== sessionId) {
+            return;
           }
           index += 1;
-          playNext();
+          speakNext();
         };
 
-        audio.onerror = () => {
-          console.error(`音频加载失败: ${audioFilePath}`);
+        utterance.onerror = (event) => {
+          if (speechSessionRef.current !== sessionId) {
+            return;
+          }
+          if (event.error === 'interrupted' || suppressInterruptedRef.current) {
+            index += 1;
+            speakNext();
+            return;
+          }
+          console.error('语音播报失败:', event);
           index += 1;
-          playNext();
+          speakNext();
         };
 
-        audioRef.current = audio;
-        audio.play().catch((err) => console.error('播放失败:', err));
+        window.speechSynthesis.speak(utterance);
       } else {
         index = 0;
         loopCount += 1;
-        
+
         if (loopCount < MAX_LOOPS) {
           alarmTimeoutRef.current = window.setTimeout(() => {
-            playNext();
+            speakNext();
           }, 500);
         }
       }
     };
-
-    playNext();
-  }, [alarmSoundMap]);
+  }, []);
 
   const stopAlarmSound = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      audioRef.current = null;
+    if ('speechSynthesis' in window) {
+      suppressInterruptedRef.current = true;
+      window.speechSynthesis.cancel();
     }
     // ✅ 清除待定的超时
     if (alarmTimeoutRef.current !== null) {
       window.clearTimeout(alarmTimeoutRef.current);
       alarmTimeoutRef.current = null;
     }
-    alarmPlayCountRef.current = 0;
+    alarmTimeoutRef.current = window.setTimeout(() => {
+      suppressInterruptedRef.current = false;
+    }, 8000);
   }, []);
 
   const closeAlarmModal = useCallback(() => {
@@ -787,7 +885,10 @@ export function HomePage() {
   // 监听风险状态变化
   useEffect(() => {
     const riskDevices = deviceVitals
-      .filter((device: DeviceVitals) => device.fallRisk)
+      .filter(
+        (device: DeviceVitals) =>
+          device.fallRisk || (device.deviceType === 'fall-detection' && device.fallDetected === true)
+      )
       .map((device: DeviceVitals) => device.room);
 
     if (riskDevices.length > 0) {
@@ -1167,6 +1268,11 @@ export function HomePage() {
       <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
         设备类型：{DEVICE_TYPE_LABELS[device.deviceType] ?? device.deviceType}
       </span>
+      {device.deviceType === 'blood-oxygen' && (
+        <span style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.55)' }}>
+          最后有效帧：{formatFrameTime(device.lastValidFrameTime)}
+        </span>
+      )}
       {dashboardLink && <span style={{ fontSize: '12px', color: '#0066cc' }}>点击进入仪表板</span>}
     </div>
   );
@@ -1286,7 +1392,10 @@ export function HomePage() {
     sessionStorage.setItem('hp-audio-permission', 'granted');
     // 同时触发首次数据加载
     fetchVitals({ showIndicator: true });
-  }, [fetchVitals]);
+    // 授权后立即播报所有已配置房间，用于测试
+    const roomsToTest = deviceConfigs.map((config) => config.room).filter(Boolean);
+    playMultipleAlarmSounds(roomsToTest);
+  }, [fetchVitals, deviceConfigs, playMultipleAlarmSounds]);
 
   // 修改原有的 useEffect，延迟首次加载直到用户授权
   useEffect(() => {
@@ -1726,10 +1835,19 @@ export function HomePage() {
                           gap: '8px',
                         }}
                       >
-                        {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate, 0, true, !!device.staleFields.heartRate)}
-                        {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate, 0, true, !!device.staleFields.respirationRate)}
-                        {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false, !!device.staleFields.distanceMin)}
-                        {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false, !!device.staleFields.movementAmplitude)}
+                        {device.deviceType === 'blood-oxygen' ? (
+                          <>
+                            {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate, 0, true, !!device.staleFields.heartRate)}
+                            {renderMetric('血氧', device.spo2, '%', device.trends.spo2, 0, true, !!device.staleFields.spo2)}
+                          </>
+                        ) : (
+                          <>
+                            {renderMetric('心率', device.heartRate, 'bpm', device.trends.heartRate, 0, true, !!device.staleFields.heartRate)}
+                            {renderMetric('呼吸率', device.respirationRate, 'rpm', device.trends.respirationRate, 0, true, !!device.staleFields.respirationRate)}
+                            {renderMetric('距离', device.distanceMin, 'cm', device.trends.distanceMin, 1, false, !!device.staleFields.distanceMin)}
+                            {renderMetric('体动值', device.movementAmplitude, '', device.trends.movementAmplitude, 1, false, !!device.staleFields.movementAmplitude)}
+                          </>
+                        )}
                       </div>
                     </div>
                   );
