@@ -9,7 +9,7 @@ import {
   type CSSProperties,
 } from 'react';
 
-import { Box, Button } from '@grafana/ui';
+import { Box, Button, Pagination } from '@grafana/ui';
 import { Page } from 'app/core/components/Page/Page';
 import { getBackendSrv } from 'app/core/services/backend_srv';
 
@@ -184,7 +184,7 @@ const DEVICE_TYPE_LABELS: Record<string, string> = {
 
 type DeviceFilterValue = 'all' | 'heart-rate' | 'blood-oxygen' | 'fall-detection';
 
-const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `房间${room}`);
+const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `${room}`);
 
 const normalizeDeviceMac = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
 const dropdownStyle: CSSProperties = {
@@ -428,6 +428,7 @@ export function HomePage() {
   const ACK_COOLDOWN_MS = 60000; // 1 分钟
   const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Map<string, number>>(new Map()); // ✅ 添加
   const [activeDeviceFilter, setActiveDeviceFilter] = useState<DeviceFilterValue>('all');
+  const [currentPage, setCurrentPage] = useState(1);
   const alarmingRoomsRef = useRef<Set<string>>(new Set());
 
   const previousMetricsRef = useRef<Map<string, DeviceMetrics>>(new Map());
@@ -435,8 +436,6 @@ export function HomePage() {
   const lastKnownMetricsRef = useRef<Map<string, DeviceLastKnownMetrics>>(new Map());
   const lastValidFrameRef = useRef<Map<string, number>>(new Map());
   const alarmTimeoutRef = useRef<number | null>(null); // ✅ 添加
-  const speechSessionRef = useRef(0);
-  const suppressInterruptedRef = useRef(false);
 
   const showPlaceholder = !hasLoadedOnce && loading;
   const deviceFilterOptions: Array<{ value: DeviceFilterValue; label: string }> = useMemo(
@@ -476,6 +475,24 @@ export function HomePage() {
     }
     return sortedDeviceVitals.filter((item: DeviceVitals) => item.deviceType === activeDeviceFilter);
   }, [activeDeviceFilter, sortedDeviceVitals]);
+
+  const ITEMS_PER_PAGE = 10;
+  const totalPages = Math.ceil(filteredDeviceVitals.length / ITEMS_PER_PAGE);
+  const paginatedVitals = useMemo(() => {
+    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+    return filteredDeviceVitals.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+  }, [filteredDeviceVitals, currentPage]);
+
+  // 当设备总数、警报导致排序变化，或者切换标签时，如果当前页超出范围，重置页码
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeDeviceFilter]);
 
   const fetchDashboards = async () => {
     try {
@@ -767,101 +784,17 @@ export function HomePage() {
     return () => clearInterval(interval);
   }, [fetchVitals]);
 
-  const playMultipleAlarmSounds = useCallback((roomIds: string[]) => {
-    if (!roomIds.length) {
-      return;
-    }
-
-    if (!('speechSynthesis' in window)) {
-      console.warn('当前浏览器不支持语音合成。');
-      return;
-    }
-
-    if (alarmTimeoutRef.current !== null) {
-      window.clearTimeout(alarmTimeoutRef.current);
-      alarmTimeoutRef.current = null;
-    }
-
-    speechSessionRef.current += 1;
-    const sessionId = speechSessionRef.current;
-    suppressInterruptedRef.current = true;
-    window.speechSynthesis.cancel();
-    alarmTimeoutRef.current = window.setTimeout(() => {
-      suppressInterruptedRef.current = false;
-      if (speechSessionRef.current === sessionId) {
-        speakNext();
-      }
-    }, 80);
-
-    let index = 0;
-    let loopCount = 0;
-    const MAX_LOOPS = 10;
-
-    const speakNext = () => {
-      if (speechSessionRef.current !== sessionId) {
-        return;
-      }
-      if (loopCount >= MAX_LOOPS) {
-        return;
-      }
-
-      if (index < roomIds.length) {
-        const roomId = roomIds[index];
-        const utterance = new SpeechSynthesisUtterance(`${formatRoomLabel(roomId)}检测到摔倒风险`);
-        utterance.lang = 'zh-CN';
-        utterance.rate = 1;
-        utterance.pitch = 1;
-        utterance.volume = 1;
-
-        utterance.onend = () => {
-          if (speechSessionRef.current !== sessionId) {
-            return;
-          }
-          index += 1;
-          speakNext();
-        };
-
-        utterance.onerror = (event) => {
-          if (speechSessionRef.current !== sessionId) {
-            return;
-          }
-          if (event.error === 'interrupted' || suppressInterruptedRef.current) {
-            index += 1;
-            speakNext();
-            return;
-          }
-          console.error('语音播报失败:', event);
-          index += 1;
-          speakNext();
-        };
-
-        window.speechSynthesis.speak(utterance);
-      } else {
-        index = 0;
-        loopCount += 1;
-
-        if (loopCount < MAX_LOOPS) {
-          alarmTimeoutRef.current = window.setTimeout(() => {
-            speakNext();
-          }, 500);
-        }
-      }
-    };
+  const playMultipleAlarmSounds = useCallback((_roomIds: string[]) => {
+    // 暂时禁用 TTS 播报功能
+    return;
   }, []);
 
   const stopAlarmSound = useCallback(() => {
-    if ('speechSynthesis' in window) {
-      suppressInterruptedRef.current = true;
-      window.speechSynthesis.cancel();
-    }
-    // ✅ 清除待定的超时
+    // 暂时禁用 TTS 播报功能
     if (alarmTimeoutRef.current !== null) {
       window.clearTimeout(alarmTimeoutRef.current);
       alarmTimeoutRef.current = null;
     }
-    alarmTimeoutRef.current = window.setTimeout(() => {
-      suppressInterruptedRef.current = false;
-    }, 8000);
   }, []);
 
   const closeAlarmModal = useCallback(() => {
@@ -1231,7 +1164,7 @@ export function HomePage() {
               title="数据短暂缺失，显示最近一次有效值"
               style={{ marginLeft: '4px', fontSize: '11px', color: 'rgba(0,0,0,0.35)', fontWeight: 400 }}
             >
-              (保持)
+              {/* (保持) */}
             </span>
           )}
         </span>
@@ -1377,38 +1310,7 @@ export function HomePage() {
     );
   };
 
-  // 使用 sessionStorage 持久化音频权限状态，防止切换页面后弹窗重复弹出
-  const [isAudioPermissionGranted, setIsAudioPermissionGranted] = useState(() => {
-    return sessionStorage.getItem('hp-audio-permission') === 'granted';
-  });
-  const [showAudioPermissionModal, setShowAudioPermissionModal] = useState(() => {
-    // 如果已经授权或已经跳过，就不再弹出
-    return sessionStorage.getItem('hp-audio-permission') === null;
-  });
-
-  const handleAudioPermissionGrant = useCallback(() => {
-    setIsAudioPermissionGranted(true);
-    setShowAudioPermissionModal(false);
-    sessionStorage.setItem('hp-audio-permission', 'granted');
-    // 同时触发首次数据加载
-    fetchVitals({ showIndicator: true });
-    // 授权后立即播报所有已配置房间，用于测试
-    const roomsToTest = deviceConfigs.map((config) => config.room).filter(Boolean);
-    playMultipleAlarmSounds(roomsToTest);
-  }, [fetchVitals, deviceConfigs, playMultipleAlarmSounds]);
-
-  // 修改原有的 useEffect，延迟首次加载直到用户授权
-  useEffect(() => {
-    if (!isAudioPermissionGranted) {
-      return;
-    }
-
-    // 只有在用户授权后才进行定时更新
-    const interval = setInterval(() => {
-      fetchVitals();
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [fetchVitals, isAudioPermissionGranted]);
+  // 暂时取消 TTS 权限弹窗与相关逻辑
 
   return (
     <Page navId="home">
@@ -1513,72 +1415,8 @@ export function HomePage() {
         }
       `}</style>
 
-      {/* 音频权限弹窗 */}
-      {showAudioPermissionModal && !isAudioPermissionGranted && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.65)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 2000,
-          }}
-        >
-          <div
-            className="hp-modal-content"
-            style={{
-              backgroundColor: '#fff',
-              padding: '32px',
-              borderRadius: '8px',
-              width: '90%',
-              maxWidth: '450px',
-              boxShadow: '0 16px 32px rgba(0, 0, 0, 0.3)',
-              border: '2px solid #0066cc',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                marginBottom: '16px',
-              }}
-            >
-              <span style={{ fontSize: '28px', marginRight: '12px' }}>🔊</span>
-              <h2 style={{ margin: 0, fontSize: '20px' }}>启用音频通知</h2>
-            </div>
-            <div
-              style={{
-                backgroundColor: '#f0f7ff',
-                padding: '16px',
-                borderRadius: '4px',
-                marginBottom: '20px',
-                border: '1px solid #0066cc',
-              }}
-            >
-              <p style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 600 }}>
-                为了在检测到摔倒风险时及时通知您，需要您允许浏览器播放音频。
-              </p>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', flexWrap: 'wrap' }}>
-              <Button variant="secondary" onClick={() => {
-                setShowAudioPermissionModal(false);
-                sessionStorage.setItem('hp-audio-permission', 'skipped');
-              }}>
-                暂时跳过
-              </Button>
-              <Button variant="primary" onClick={handleAudioPermissionGrant}>
-                启用音频通知
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 主页面内容 */}
-      {!showAudioPermissionModal && (
-        <>
+      <>
           <div className="hp-root">
             <Box
               display="flex"
@@ -1729,29 +1567,32 @@ export function HomePage() {
                 className="hp-card-grid"
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
                   gap: '12px',
                   width: '100%',
-                  maxWidth: '1200px',
+                  maxWidth: '1400px', // 稍微加宽以适应5列
                   marginBottom: '24px',
                 }}
               >
-                {filteredDeviceVitals.map((device: DeviceVitals) => {
+                {paginatedVitals.map((device: DeviceVitals) => {
                   const dashboardLink = device.deviceMac ? dashboardUrlByDevice.get(device.deviceMac) ?? null : null;
 
                   if (device.deviceType === 'fall-detection') {
                     return renderFallDetectionCard(device, dashboardLink);
                   }
 
+                  const isBloodOxygenDevice = device.deviceType === 'blood-oxygen';
                   let cardBackgroundColor = 'rgba(0, 0, 0, 0.02)';
                   let cardBorderColor = 'rgba(0, 0, 0, 0.08)';
 
-                  if (device.fallRisk) {
-                    cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
-                    cardBorderColor = 'rgba(220, 53, 69, 0.4)';
-                  } else if (device.occupied) {
-                    cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
-                    cardBorderColor = 'rgba(40, 167, 69, 0.5)';
+                  if (!isBloodOxygenDevice) {
+                    if (device.fallRisk) {
+                      cardBackgroundColor = 'rgba(220, 53, 69, 0.12)';
+                      cardBorderColor = 'rgba(220, 53, 69, 0.4)';
+                    } else if (device.occupied) {
+                      cardBackgroundColor = 'rgba(40, 167, 69, 0.15)';
+                      cardBorderColor = 'rgba(40, 167, 69, 0.5)';
+                    }
                   }
 
                   return (
@@ -1775,56 +1616,57 @@ export function HomePage() {
                     >
                       {renderCardHeader(device, dashboardLink)}
 
-                      {/* 有人状态 / 摔倒风险 */}
-                      <div
-                        className="hp-status-grid"
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                          gap: '8px',
-                        }}
-                      >
+                      {!isBloodOxygenDevice && (
                         <div
+                          className="hp-status-grid"
                           style={{
-                            padding: '8px 12px',
-                            backgroundColor: 'rgba(0, 0, 0, 0.02)',
-                            borderRadius: '4px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '4px',
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                            gap: '8px',
                           }}
                         >
-                          <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                            有人状态
-                          </span>
-                          <span style={{ fontSize: '18px', fontWeight: 600 }}>
-                            {showPlaceholder ? '-' : device.occupied ? '有人' : '无人'}
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            padding: '8px 12px',
-                            backgroundColor: device.fallRisk ? 'rgba(220, 53, 69, 0.15)' : 'rgba(0, 0, 0, 0.02)',
-                            borderRadius: '4px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '4px',
-                          }}
-                        >
-                          <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
-                            摔倒风险
-                          </span>
-                          <span
+                          <div
                             style={{
-                              fontSize: '18px',
-                              fontWeight: 600,
-                              color: device.fallRisk ? '#d63342' : 'inherit',
+                              padding: '8px 12px',
+                              backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                              borderRadius: '4px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '4px',
                             }}
                           >
-                            {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
-                          </span>
+                            <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                              有人状态
+                            </span>
+                            <span style={{ fontSize: '18px', fontWeight: 600 }}>
+                              {showPlaceholder ? '-' : device.occupied ? '有人' : '无人'}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: device.fallRisk ? 'rgba(220, 53, 69, 0.15)' : 'rgba(0, 0, 0, 0.02)',
+                              borderRadius: '4px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '4px',
+                            }}
+                          >
+                            <span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.8)', fontWeight: 600 }}>
+                              摔倒风险
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '18px',
+                                fontWeight: 600,
+                                color: device.fallRisk ? '#d63342' : 'inherit',
+                              }}
+                            >
+                              {showPlaceholder ? '-' : device.fallRisk ? '有风险' : '无风险'}
+                            </span>
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       {/* 指标 */}
                       <div
@@ -1853,6 +1695,26 @@ export function HomePage() {
                   );
                 })}
               </div>
+
+              {/* 分页组件 */}
+              {totalPages > 1 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginTop: '8px',
+                    marginBottom: '32px',
+                    width: '100%',
+                  }}
+                >
+                  <Pagination
+                    currentPage={currentPage}
+                    numberOfPages={totalPages}
+                    onNavigate={setCurrentPage}
+                    hideWhenSinglePage={true}
+                  />
+                </div>
+              )}
             </Box>
           </div>
 
@@ -2403,8 +2265,7 @@ export function HomePage() {
               </div>
             </div>
           )}
-        </>
-      )}
+      </>
     </Page>
   );
 }
