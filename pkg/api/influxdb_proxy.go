@@ -1,102 +1,108 @@
 package api
 
 import (
-    "bytes"
-    "context"
-    "encoding/csv"
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "net/url"
-    "os"
-    "strings"
-    "sync"
-    "time"
+	"bytes"
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/grafana/grafana/pkg/api/response"
-    "github.com/grafana/grafana/pkg/infra/db"
-    contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
-    "github.com/grafana/grafana/pkg/web"
+	"github.com/grafana/grafana/pkg/api/response"
+	"github.com/grafana/grafana/pkg/infra/db"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
+	"github.com/grafana/grafana/pkg/web"
 )
 
 var (
-    influxURL         = getenv("INFLUXDB_URL", "https://influx.lanhc.com")
-    influxToken       = getenv("INFLUXDB_TOKEN", "kcF_lnBLOpnArrmmHytfGCeo5bGh5LQJb_d6wxyBZntWUbz-KyUv8UH_3huFP5Ac3SjOwX5KniuEmgpV_WUwYQ==")
-    influxOrg         = getenv("INFLUXDB_ORG", "ld6002h")
-    defaultBucket     = getenv("INFLUXDB_BUCKET", "vitals_data")
-    defaultDeviceID   = getenv("DEVICE_ID", "84F7035346E0")
-    fallbackDeviceIDs = []string{"B8F862F6BFD8", "84F7035346E0", "10B41DC081B2", "84F7035346E2"}
+	influxURL       = getenv("INFLUXDB_URL", "https://influx.lanhc.com")
+	influxToken     = getenv("INFLUXDB_TOKEN", "kcF_lnBLOpnArrmmHytfGCeo5bGh5LQJb_d6wxyBZntWUbz-KyUv8UH_3huFP5Ac3SjOwX5KniuEmgpV_WUwYQ==")
+	influxOrg       = getenv("INFLUXDB_ORG", "ld6002h")
+	defaultBucket   = getenv("INFLUXDB_BUCKET", "vitals_data")
+	defaultDeviceIDs = getenv("DEVICE_IDS", "ACA704DA4B80,C04E309BB608,D0CF1316DEC4") // 逗号分隔，多设备兜底
+	defaultDeviceID = getenv("DEVICE_ID", "D0CF1316DEC4")
+	fallbackDeviceIDs = []string{"B8F862F6BFD8", "84F7035346E0", "10B41DC081B2", "84F7035346E2"}
 )
 
+// 缓存结构体，用于后端主动查询缓存
 type CachedVitalsData struct {
-    Results   []map[string]string `json:"results"`
-    Timestamp int64               `json:"timestamp"`
+	Results   []map[string]string `json:"results"`
+	Timestamp int64               `json:"timestamp"` // Unix 毫秒时间戳
 }
 
 var (
-    vitalsCache      CachedVitalsData
-    vitalsCacheMutex sync.RWMutex
+	vitalsCache      CachedVitalsData
+	vitalsCacheMutex sync.RWMutex
 )
 
 func getenv(key, fallback string) string {
-    if value := os.Getenv(key); value != "" {
-        return value
-    }
-    return fallback
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 type InfluxDBQueryRequest struct {
-    Query    string `json:"query,omitempty"`
-    Field    string `json:"field,omitempty"`
-    Mode     string `json:"mode,omitempty"`
-    Bucket   string `json:"bucket,omitempty"`
-    DeviceID string `json:"deviceId,omitempty"`
+	Query    string `json:"query,omitempty"`
+	Field    string `json:"field,omitempty"`
+	Mode     string `json:"mode,omitempty"` // tma2m / mean5m
+	Bucket   string `json:"bucket,omitempty"`
+	DeviceID string `json:"deviceId,omitempty"`
 }
 
 type InfluxDBQueryResponse struct {
-    Results []interface{} `json:"results,omitempty"`
-    Error   string        `json:"error,omitempty"`
+	Results []interface{} `json:"results,omitempty"`
+	Error   string        `json:"error,omitempty"`
 }
 
+// InfluxDBQuery 处理 InfluxDB Flux 查询请求 - 返回缓存数据
 func (hs *HTTPServer) InfluxDBQuery(c *contextmodel.ReqContext) response.Response {
-    var req InfluxDBQueryRequest
-    if err := web.Bind(c.Req, &req); err != nil {
-        hs.log.Error("Failed to parse request", "error", err)
-        return response.Error(http.StatusBadRequest, "Invalid request body", err)
-    }
+	var req InfluxDBQueryRequest
 
-    vitalsCacheMutex.RLock()
-    cachedData := vitalsCache
-    vitalsCacheMutex.RUnlock()
+	if err := web.Bind(c.Req, &req); err != nil {
+		hs.log.Error("Failed to parse request", "error", err)
+		return response.Error(http.StatusBadRequest, "Invalid request body", err)
+	}
 
-    if cachedData.Results == nil {
-        hs.log.Warn("Cache is empty, returning empty results")
-        return response.JSON(http.StatusOK, map[string]any{"results": []interface{}{}, "timestamp": time.Now().UnixMilli()})
-    }
+	// 直接返回缓存数据，而不是每次都查询 InfluxDB
+	vitalsCacheMutex.RLock()
+	cachedData := vitalsCache
+	vitalsCacheMutex.RUnlock()
 
-    hs.log.Info("Returning cached vitals data", "recordCount", len(cachedData.Results), "cacheAge", time.Now().UnixMilli()-cachedData.Timestamp)
-    return response.JSON(http.StatusOK, map[string]any{"results": cachedData.Results, "timestamp": cachedData.Timestamp})
+	if cachedData.Results == nil {
+		hs.log.Warn("Cache is empty, returning empty results")
+		return response.JSON(http.StatusOK, map[string]any{"results": []interface{}{}, "timestamp": time.Now().UnixMilli()})
+	}
+
+	hs.log.Info("Returning cached vitals data", "recordCount", len(cachedData.Results), "cacheAge", time.Now().UnixMilli()-cachedData.Timestamp)
+	return response.JSON(http.StatusOK, map[string]any{"results": cachedData.Results, "timestamp": cachedData.Timestamp})
 }
 
+// 辅助函数
 func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func firstNonEmpty(values ...string) string {
-    for _, value := range values {
-        if strings.TrimSpace(value) != "" {
-            return value
-        }
-    }
-    return ""
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func fluxSampleTMA2M(bucket, deviceID, field string) string {
-    return fmt.Sprintf(`from(bucket: "%s")
+	return fmt.Sprintf(`from(bucket: "%s")
   |> range(start: -12h)
   |> filter(fn: (r) => r["device_id"] == "%s")
   |> filter(fn: (r) => r["_field"] == "%s")
@@ -106,7 +112,7 @@ func fluxSampleTMA2M(bucket, deviceID, field string) string {
 }
 
 func fluxMean5m(bucket, deviceID, field string) string {
-    return fmt.Sprintf(`from(bucket: "%s")
+	return fmt.Sprintf(`from(bucket: "%s")
   |> range(start: -2m)
   |> filter(fn: (r) => r["device_id"] == "%s")
   |> filter(fn: (r) => r["_field"] == "%s")
@@ -115,186 +121,323 @@ func fluxMean5m(bucket, deviceID, field string) string {
 }
 
 func parseFluxCSV(body []byte) ([]map[string]string, error) {
-    reader := csv.NewReader(bytes.NewReader(body))
-    reader.FieldsPerRecord = -1
+	reader := csv.NewReader(bytes.NewReader(body))
+	reader.FieldsPerRecord = -1
 
-    var (
-        headers []string
-        rows    []map[string]string
-    )
+	var (
+		headers []string
+		rows    []map[string]string
+	)
 
-    for {
-        record, err := reader.Read()
-        if err == io.EOF {
-            break
-        }
-        if err != nil {
-            return nil, err
-        }
-        if len(record) == 0 {
-            continue
-        }
-        if strings.HasPrefix(record[0], "#") {
-            headers = nil
-            continue
-        }
-        if headers == nil {
-            headers = record
-            continue
-        }
-
-        row := make(map[string]string, len(headers))
-        for index, header := range headers {
-            if index < len(record) {
-                row[header] = record[index]
-            }
-        }
-        rows = append(rows, row)
-    }
-
-    return rows, nil
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(record) == 0 {
+			continue
+		}
+		if strings.HasPrefix(record[0], "#") {
+			headers = nil
+			continue
+		}
+		if headers == nil {
+			headers = record
+			continue
+		}
+		row := make(map[string]string, len(headers))
+		for i, h := range headers {
+			if i < len(record) {
+				row[h] = record[i]
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
+// ===== 固定时间段回放模式 =====
+// 一次性拉取 2026-03-07 19:00 ~ 19:05 的数据，按秒循环回放
+
+var (
+	// 固定时间段的全量数据（启动时从 InfluxDB 拉取一次）
+	fixedPeriodData      []map[string]string
+	fixedPeriodDataMutex sync.RWMutex
+	fixedPeriodLoaded    bool
+
+    // 固定时间段起止（UTC）
+fixedStart = time.Date(2026, 4, 9, 14, 50, 0, 0, time.UTC) // 4月9日 22:50 CST = 4月9日 14:50 UTC
+fixedEnd   = time.Date(2026, 4, 9, 15, 10, 0, 0, time.UTC) // 4月9日 23:10 CST = 4月9日 15:10 UTC
+	fixedDuration = fixedEnd.Sub(fixedStart)                     // 5 分钟
+)
+
+// 后端主动查询 InfluxDB 并更新缓存（后台运行）——固定时间段循环回放模式
 func (hs *HTTPServer) startVitalsCacheRefresh() {
-    go func() {
-        hs.refreshRealtimeVitals()
+	go func() {
+		// 第一步：一次性拉取固定时间段的全部数据
+		hs.loadFixedPeriodData()
 
-        ticker := time.NewTicker(2 * time.Second)
-        defer ticker.Stop()
+		// 第二步：每秒按时间偏移从全量数据中取出对应时刻的数据，循环回放
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
 
-        for range ticker.C {
-            hs.refreshRealtimeVitals()
-        }
-    }()
+		startPlayback := time.Now()
+
+		for range ticker.C {
+			hs.replayVitalsCache(startPlayback)
+		}
+	}()
 }
 
-func (hs *HTTPServer) refreshRealtimeVitals() {
-    devices := hs.loadConfiguredDeviceIDs()
-    if len(devices) == 0 {
-        return
-    }
+// loadFixedPeriodData 一次性从 InfluxDB 拉取固定 5 分钟的数据
+func (hs *HTTPServer) loadFixedPeriodData() {
+	devices := hs.loadConfiguredDeviceIDs()
+	if len(devices) == 0 {
+		hs.log.Warn("No devices found for fixed period query")
+		return
+	}
 
-    filterParts := make([]string, 0, len(devices))
-    for _, deviceID := range devices {
-        filterParts = append(filterParts, fmt.Sprintf(`r["device_id"] == "%s"`, deviceID))
-    }
-    deviceFilter := strings.Join(filterParts, " or ")
+	deviceFilter := strings.Join(
+		func() []string {
+			var filters []string
+			for _, d := range devices {
+				filters = append(filters, fmt.Sprintf(`r["device_id"] == "%s"`, d))
+			}
+			return filters
+		}(),
+		" or ",
+	)
 
-    fluxQuery := fmt.Sprintf(`from(bucket: "%s")
-    |> range(start: -1m)
-    |> filter(fn: (r) => r["_measurement"] == "device_data")
-    |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
-    |> filter(fn: (r) => %s)
-    |> last()`,
-        defaultBucket,
-        deviceFilter,
-    )
+	fluxQuery := fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: %s, stop: %s)
+  |> filter(fn: (r) => r["_measurement"] == "device_data")
+	|> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
+  |> filter(fn: (r) => %s)`,
+		defaultBucket,
+		fixedStart.Format(time.RFC3339),
+		fixedEnd.Format(time.RFC3339),
+		deviceFilter,
+	)
 
-    data, err := hs.executeInfluxQuery(fluxQuery)
-    if err != nil {
-        hs.log.Error("Failed to refresh realtime vitals", "error", err)
-        return
-    }
+	hs.log.Info("Loading fixed period data from InfluxDB",
+		"start", fixedStart.Format(time.RFC3339),
+		"stop", fixedEnd.Format(time.RFC3339))
 
-    vitalsCacheMutex.Lock()
-    vitalsCache = CachedVitalsData{
-        Results:   data,
-        Timestamp: time.Now().UnixMilli(),
-    }
-    vitalsCacheMutex.Unlock()
+	for retries := 0; retries < 5; retries++ {
+		data, err := hs.executeInfluxQuery(fluxQuery)
+		if err != nil {
+			hs.log.Error("Failed to load fixed period data, retrying...", "error", err, "retry", retries+1)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		fixedPeriodDataMutex.Lock()
+		fixedPeriodData = data
+		fixedPeriodLoaded = true
+		fixedPeriodDataMutex.Unlock()
+
+		hs.log.Info("Fixed period data loaded successfully", "recordCount", len(data))
+		return
+	}
+
+	hs.log.Error("Failed to load fixed period data after all retries")
 }
 
-type homePageCardDeviceRow struct {
-    DeviceMAC string `xorm:"device_mac"`
+type deviceMACRow struct {
+	DeviceMAC string `xorm:"device_mac"`
 }
 
 func (hs *HTTPServer) loadConfiguredDeviceIDs() []string {
-    devices := make([]string, 0)
-    seen := make(map[string]struct{})
+	devices := make([]string, 0)
+	seen := make(map[string]struct{})
 
-    appendDevice := func(deviceID string) {
-        deviceID = strings.TrimSpace(strings.ToUpper(deviceID))
-        if deviceID == "" {
-            return
-        }
-        if _, exists := seen[deviceID]; exists {
-            return
-        }
-        seen[deviceID] = struct{}{}
-        devices = append(devices, deviceID)
-    }
+	appendDevice := func(deviceID string) {
+		deviceID = strings.TrimSpace(strings.ToUpper(deviceID))
+		if deviceID == "" {
+			return
+		}
+		if _, exists := seen[deviceID]; exists {
+			return
+		}
+		seen[deviceID] = struct{}{}
+		devices = append(devices, deviceID)
+	}
 
-    err := hs.SQLStore.WithDbSession(context.Background(), func(sess *db.Session) error {
-        var rows []homePageCardDeviceRow
-        if err := sess.SQL("SELECT DISTINCT device_mac FROM home_page_card WHERE device_mac IS NOT NULL AND device_mac <> ''").Find(&rows); err != nil {
-            return err
-        }
+	for _, deviceID := range strings.Split(defaultDeviceIDs, ",") {
+		appendDevice(deviceID)
+	}
 
-        for _, row := range rows {
-            appendDevice(row.DeviceMAC)
-        }
+	err := hs.SQLStore.WithDbSession(context.Background(), func(sess *db.Session) error {
+		var rows []deviceMACRow
+		if err := sess.SQL("SELECT DISTINCT device_mac FROM device WHERE device_mac IS NOT NULL AND device_mac <> ''").Find(&rows); err != nil {
+			return err
+		}
 
-        return nil
-    })
-    if err != nil {
-        hs.log.Error("Failed to load home page card devices, using fallback list", "error", err)
-    }
+		for _, row := range rows {
+			appendDevice(row.DeviceMAC)
+		}
 
-    if len(devices) == 0 {
-        for _, deviceID := range fallbackDeviceIDs {
-            appendDevice(deviceID)
-        }
-        appendDevice(defaultDeviceID)
-    }
+		return nil
+	})
+	if err != nil {
+		hs.log.Error("Failed to load devices from device table, using fallback list", "error", err)
+	}
 
-    return devices
+	if len(devices) == 0 {
+		for _, deviceID := range fallbackDeviceIDs {
+			appendDevice(deviceID)
+		}
+		appendDevice(defaultDeviceID)
+	}
+
+	return devices
+}
+
+// replayVitalsCache 根据当前墙钟时间计算在 5 分钟窗口内的偏移，取出对应秒的数据写入缓存
+func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
+	fixedPeriodDataMutex.RLock()
+	if !fixedPeriodLoaded || len(fixedPeriodData) == 0 {
+		fixedPeriodDataMutex.RUnlock()
+		return
+	}
+	allData := fixedPeriodData
+	fixedPeriodDataMutex.RUnlock()
+
+	// 当前回放已经过去了多少时间，对 5 分钟取模，实现循环
+	elapsed := time.Since(startPlayback)
+	offset := elapsed % fixedDuration // 0 ~ 5min 循环
+
+	// 当前虚拟时间点
+	virtualNow := fixedStart.Add(offset)
+	windowStart := virtualNow.Add(-5 * time.Second) // 取前 5 秒的数据窗口
+
+	// 从全量数据中筛选落在 [windowStart, virtualNow] 的记录
+	var matched []map[string]string
+	for _, row := range allData {
+		tStr, ok := row["_time"]
+		if !ok {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, tStr)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, tStr)
+			if err != nil {
+				continue
+			}
+		}
+		if (t.Equal(windowStart) || t.After(windowStart)) && (t.Equal(virtualNow) || t.Before(virtualNow)) {
+			matched = append(matched, row)
+		}
+	}
+
+	// 如果当前窗口没数据，取最近的一条（避免空白）
+	if len(matched) == 0 {
+		matched = findClosestRecords(allData, virtualNow)
+	}
+
+	vitalsCacheMutex.Lock()
+	vitalsCache = CachedVitalsData{
+		Results:   matched,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	vitalsCacheMutex.Unlock()
+
+	hs.log.Debug("Vitals cache replayed",
+		"virtualTime", virtualNow.Format(time.RFC3339),
+		"matchedRecords", len(matched),
+		"offset", offset.String())
+}
+
+// findClosestRecords 当窗口内无数据时，找到离 virtualNow 最近的每个 device+field 的记录
+func findClosestRecords(allData []map[string]string, virtualNow time.Time) []map[string]string {
+	type key struct {
+		deviceID string
+		field    string
+	}
+	closest := make(map[key]map[string]string)
+	closestDiff := make(map[key]time.Duration)
+
+	for _, row := range allData {
+		tStr, ok := row["_time"]
+		if !ok {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, tStr)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, tStr)
+			if err != nil {
+				continue
+			}
+		}
+		k := key{deviceID: row["device_id"], field: row["_field"]}
+		diff := virtualNow.Sub(t)
+		if diff < 0 {
+			diff = -diff
+		}
+		if prev, exists := closestDiff[k]; !exists || diff < prev {
+			closestDiff[k] = diff
+			closest[k] = row
+		}
+	}
+
+	result := make([]map[string]string, 0, len(closest))
+	for _, row := range closest {
+		result = append(result, row)
+	}
+	return result
 }
 
 func (hs *HTTPServer) executeInfluxQuery(fluxQuery string) ([]map[string]string, error) {
-    queryURL, err := url.Parse(fmt.Sprintf("%s/api/v2/query", influxURL))
-    if err != nil {
-        return nil, err
-    }
+	// 构建 InfluxDB 查询 URL
+	queryURL, err := url.Parse(fmt.Sprintf("%s/api/v2/query", influxURL))
+	if err != nil {
+		return nil, err
+	}
 
-    values := queryURL.Query()
-    values.Set("org", influxOrg)
-    queryURL.RawQuery = values.Encode()
+	q := queryURL.Query()
+	q.Set("org", influxOrg)
+	queryURL.RawQuery = q.Encode()
 
-    bodyBytes, err := json.Marshal(map[string]string{"query": fluxQuery})
-    if err != nil {
-        return nil, err
-    }
+	bodyBytes, err := json.Marshal(map[string]string{
+		"query": fluxQuery,
+	})
+	if err != nil {
+		return nil, err
+	}
 
-    httpReq, err := http.NewRequest("POST", queryURL.String(), bytes.NewReader(bodyBytes))
-    if err != nil {
-        return nil, err
-    }
+	httpReq, err := http.NewRequest("POST", queryURL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
 
-    httpReq.Header.Set("Authorization", fmt.Sprintf("Token %s", influxToken))
-    httpReq.Header.Set("Accept", "text/csv")
-    httpReq.Header.Set("Content-Type", "application/json")
-    httpReq.Header.Set("User-Agent", "Grafana/12.3.0")
+	httpReq.Header.Set("Authorization", fmt.Sprintf("Token %s", influxToken))
+	httpReq.Header.Set("Accept", "text/csv")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", "Grafana/12.3.0")
 
-    client := &http.Client{Timeout: 10 * time.Second}
-    resp, err := client.Do(httpReq)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, err
-    }
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
-    if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("InfluxDB returned status %d: %s", resp.StatusCode, string(body))
-    }
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("InfluxDB returned status %d: %s", resp.StatusCode, string(body))
+	}
 
-    contentType := resp.Header.Get("Content-Type")
-    if strings.Contains(strings.ToLower(contentType), "text/csv") {
-        return parseFluxCSV(body)
-    }
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(strings.ToLower(contentType), "text/csv") {
+		return parseFluxCSV(body)
+	}
 
-    return nil, fmt.Errorf("unexpected content type: %s", contentType)
+	return nil, fmt.Errorf("unexpected content type: %s", contentType)
 }

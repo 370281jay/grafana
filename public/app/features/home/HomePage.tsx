@@ -426,6 +426,7 @@ export function HomePage() {
   const [alarmDevices, setAlarmDevices] = useState<string[]>([]);
   const [lastAlarmTime, setLastAlarmTime] = useState<number>(0);
   const ACK_COOLDOWN_MS = 60000; // 1 分钟
+  const FALL_ALERT_THRESHOLD_SECONDS = 10; // 跌倒持续时间超过 10s 才弹窗
   const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Map<string, number>>(new Map()); // ✅ 添加
   const [activeDeviceFilter, setActiveDeviceFilter] = useState<DeviceFilterValue>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -818,10 +819,18 @@ export function HomePage() {
   // 监听风险状态变化
   useEffect(() => {
     const riskDevices = deviceVitals
-      .filter(
-        (device: DeviceVitals) =>
-          device.fallRisk || (device.deviceType === 'fall-detection' && device.fallDetected === true)
-      )
+      .filter((device: DeviceVitals) => {
+        if (device.deviceType !== 'fall-detection') {
+          return false;
+        }
+
+        if (device.fallDetected !== true) {
+          return false;
+        }
+
+        const fallDuration = device.fallTimerSeconds ?? 0;
+        return fallDuration > FALL_ALERT_THRESHOLD_SECONDS;
+      })
       .map((device: DeviceVitals) => device.room);
 
     if (riskDevices.length > 0) {
@@ -868,6 +877,7 @@ export function HomePage() {
     acknowledgedRiskRooms,
     playMultipleAlarmSounds,
     stopAlarmSound,
+    FALL_ALERT_THRESHOLD_SECONDS,
   ]);
 
   const handleManualRefresh = () => {
