@@ -199,15 +199,8 @@ const dropdownStyle: CSSProperties = {
   lineHeight: '1.35',
   appearance: 'none',
 };
-//房间添加
-const MONITORED_DEVICES: DeviceConfig[] = [
-  // { room: '1', deviceId: 'D0CF1316DEC4' },
-  { room: '1', deviceId: null, deviceMac: 'B8F862F6BFD8', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '2', deviceId: null, deviceMac: '84F7035346E0', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '3', deviceId: null, deviceMac: '10B41DC081B2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  { room: '4', deviceId: null, deviceMac: '84F7035346E2', deviceType: DEFAULT_DEVICE_TYPE, dashboardUid: '', dashboardUrl: '' },
-  // 在此添加更多设备配置
-];
+// 首页卡片配置来自后端（按当前用户组织隔离），默认不使用固定设备回退。
+const MONITORED_DEVICES: DeviceConfig[] = [];
 
 const INFLUXDB_CONFIG = {
   url: 'http://influx.lanhc.com',
@@ -555,7 +548,7 @@ export function HomePage() {
       const result = await getBackendSrv().get<HomePageCardDTO[]>('/api/home-page-cards');
 
       if (!Array.isArray(result) || result.length === 0) {
-        setDeviceConfigs(MONITORED_DEVICES);
+        setDeviceConfigs([]);
         return;
       }
 
@@ -571,10 +564,10 @@ export function HomePage() {
           dashboardUrl: String(item.dashboardUrl ?? '').trim(),
         }));
 
-      setDeviceConfigs(items.length > 0 ? items : MONITORED_DEVICES);
+      setDeviceConfigs(items);
     } catch (err) {
       console.error('Failed to fetch home page cards:', err);
-      setDeviceConfigs(MONITORED_DEVICES);
+      setDeviceConfigs([]);
     }
   };
 
@@ -1581,6 +1574,22 @@ export function HomePage() {
                   marginBottom: '24px',
                 }}
               >
+                {!loading && paginatedVitals.length === 0 && (
+                  <div
+                    style={{
+                      gridColumn: '1 / -1',
+                      border: '1px dashed rgba(0, 0, 0, 0.2)',
+                      borderRadius: '8px',
+                      padding: '20px',
+                      textAlign: 'center',
+                      color: 'rgba(0, 0, 0, 0.6)',
+                      backgroundColor: 'rgba(0, 0, 0, 0.015)',
+                    }}
+                  >
+                    当前组织暂无首页卡片，请点击“设置”后添加并绑定设备。
+                  </div>
+                )}
+
                 {paginatedVitals.map((device: DeviceVitals) => {
                   const dashboardLink = device.deviceMac ? dashboardUrlByDevice.get(device.deviceMac) ?? null : null;
 

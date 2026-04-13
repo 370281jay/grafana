@@ -53,6 +53,8 @@ func (hs *HTTPServer) createDevice(c *contextmodel.ReqContext) response.Response
 	if err := web.Bind(c.Req, cmd); err != nil {
 		return response.Error(http.StatusBadRequest, "Invalid request body", err)
 	}
+	// 安全兜底：组织信息只信当前登录上下文，不信前端传参
+	cmd.OrgID = c.OrgID
 
 	created, err := hs.deviceService.Create(c.Req.Context(), cmd)
 	if err != nil {
@@ -74,6 +76,8 @@ func (hs *HTTPServer) updateDevice(c *contextmodel.ReqContext) response.Response
 	}
 
 	cmd.ID = id
+	// 安全兜底：组织信息只信当前登录上下文，不信前端传参
+	cmd.OrgID = c.OrgID
 
 	updated, err := hs.deviceService.Update(c.Req.Context(), cmd)
 	if err != nil {

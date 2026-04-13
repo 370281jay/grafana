@@ -39,6 +39,8 @@ func (hs *HTTPServer) createHomePageCard(c *contextmodel.ReqContext) response.Re
 	if err := web.Bind(c.Req, cmd); err != nil {
 		return response.Error(http.StatusBadRequest, "Invalid request body", err)
 	}
+	// 安全兜底：组织信息只信当前登录上下文，不信前端传参
+	cmd.OrgID = c.OrgID
 	if resp := hs.populateCardDeviceMetadata(c, cmd.DeviceID, &cmd.DeviceMAC, &cmd.DeviceType); resp != nil {
 		return resp
 	}
@@ -63,6 +65,8 @@ func (hs *HTTPServer) updateHomePageCard(c *contextmodel.ReqContext) response.Re
 	}
 
 	cmd.ID = id
+	// 安全兜底：组织信息只信当前登录上下文，不信前端传参
+	cmd.OrgID = c.OrgID
 	if resp := hs.populateCardDeviceMetadata(c, cmd.DeviceID, &cmd.DeviceMAC, &cmd.DeviceType); resp != nil {
 		return resp
 	}
