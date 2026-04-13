@@ -312,11 +312,6 @@ const extractDeviceMetrics = (response: InfluxQueryResponse): Map<string, Device
     const parsedTime = typeof timeRaw === 'string' ? Date.parse(timeRaw) : Number.NaN;
     const rowTime = Number.isNaN(parsedTime) ? null : parsedTime;
 
-    // ✅ 检查体动值是否 > 900
-    if (field === 'movement_amplitude' && numericValue > 800) {
-      metrics.fallRiskDetected = true;
-    }
-
     switch (field) {
       case 'heart_rate_bpm':
         metrics.heartRate = numericValue;
@@ -426,7 +421,7 @@ export function HomePage() {
   const [alarmDevices, setAlarmDevices] = useState<string[]>([]);
   const [lastAlarmTime, setLastAlarmTime] = useState<number>(0);
   const ACK_COOLDOWN_MS = 60000; // 1 分钟
-  const FALL_ALERT_THRESHOLD_SECONDS = 10; // 跌倒持续时间超过 10s 才弹窗
+  const FALL_ALERT_THRESHOLD_SECONDS = 20; // 跌倒持续时间超过 10s 才弹窗
   const [acknowledgedRiskRooms, setAcknowledgedRiskRooms] = useState<Map<string, number>>(new Map()); // ✅ 添加
   const [activeDeviceFilter, setActiveDeviceFilter] = useState<DeviceFilterValue>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -690,6 +685,7 @@ export function HomePage() {
           const deviceType = config.deviceType ?? DEFAULT_DEVICE_TYPE;
           const isFallDevice = deviceType === 'fall-detection';
           const isBloodOxygenDevice = deviceType === 'blood-oxygen';
+          const isHeartRateDevice = deviceType === 'heart-rate';
 
           let lastValidFrameTime = lastValidFrameRef.current.get(deviceKey) ?? null;
           if (isBloodOxygenDevice && heartRateValid && spo2Valid) {
@@ -710,7 +706,8 @@ export function HomePage() {
           const humanPresenceValue = humanPresence == null ? null : humanPresence >= 0.5;
 
           // fallRisk 必须是 boolean，用于触发报警，null 视为 false
-          const fallRisk = isFallDevice ? (fallDetected === true) : fallRiskDetected;
+          // 心率检测卡片不再因体动值过高展示风险样式。
+          const fallRisk = isFallDevice ? (fallDetected === true) : isHeartRateDevice ? false : fallRiskDetected;
 
           const occupied = isFallDevice
             ? humanPresenceValue ?? false
