@@ -25,10 +25,12 @@ var (
 	influxToken     = getenv("INFLUXDB_TOKEN", "kcF_lnBLOpnArrmmHytfGCeo5bGh5LQJb_d6wxyBZntWUbz-KyUv8UH_3huFP5Ac3SjOwX5KniuEmgpV_WUwYQ==")
 	influxOrg       = getenv("INFLUXDB_ORG", "ld6002h")
 	defaultBucket   = getenv("INFLUXDB_BUCKET", "vitals_data")
-	defaultDeviceIDs = getenv("DEVICE_IDS", "ACA704DA4B80,C04E309BB608,D0CF1316DEC4") // 逗号分隔，多设备兜底
+	defaultDeviceIDs = getenv("DEVICE_IDS", "ACA704DA4B80,C04E309BB608,D0CF1316DEC4") // 固定时间循环回放设备列表
 	defaultDeviceID = getenv("DEVICE_ID", "D0CF1316DEC4")
 	fallbackDeviceIDs = []string{"B8F862F6BFD8", "84F7035346E0", "10B41DC081B2", "84F7035346E2"}
 )
+
+const vitalsFieldFilter = `r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid"`
 
 // 缓存结构体，用于后端主动查询缓存
 type CachedVitalsData struct {
@@ -99,6 +101,58 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseDeviceIDList(raw string) []string {
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, deviceID := range strings.Split(raw, ",") {
+		normalized := strings.TrimSpace(strings.ToUpper(deviceID))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func buildDeviceFilterExpr(devices []string) string {
+	if len(devices) == 0 {
+		return "false"
+	}
+	filters := make([]string, 0, len(devices))
+	for _, d := range devices {
+		filters = append(filters, fmt.Sprintf(`r["device_id"] == "%s"`, d))
+	}
+	return strings.Join(filters, " or ")
+}
+
+func excludeDevices(all []string, excluded []string) []string {
+	if len(all) == 0 {
+		return nil
+	}
+	excludedSet := make(map[string]struct{}, len(excluded))
+	for _, d := range excluded {
+		excludedSet[strings.TrimSpace(strings.ToUpper(d))] = struct{}{}
+	}
+
+	result := make([]string, 0, len(all))
+	for _, d := range all {
+		normalized := strings.TrimSpace(strings.ToUpper(d))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := excludedSet[normalized]; exists {
+			continue
+		}
+		result = append(result, normalized)
+	}
+
+	return result
 }
 
 func fluxSampleTMA2M(bucket, deviceID, field string) string {
@@ -177,48 +231,78 @@ fixedEnd   = time.Date(2026, 4, 9, 15, 10, 0, 0, time.UTC) // 4月9日 23:10 CST
 // 后端主动查询 InfluxDB 并更新缓存（后台运行）——固定时间段循环回放模式
 func (hs *HTTPServer) startVitalsCacheRefresh() {
 	go func() {
-		// 第一步：一次性拉取固定时间段的全部数据
-		hs.loadFixedPeriodData()
+		fixedReplayDevices := parseDeviceIDList(defaultDeviceIDs)
+		if len(fixedReplayDevices) == 0 {
+			fixedReplayDevices = parseDeviceIDList(defaultDeviceID)
+		}
 
-		// 第二步：每秒按时间偏移从全量数据中取出对应时刻的数据，循环回放
+		// 1) 一次性加载固定设备在固定时段的数据，供循环回放
+		hs.loadFixedPeriodData(fixedReplayDevices)
+
+		// 2) 并行策略：固定设备走循环回放，其他设备走实时拉取
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
 		startPlayback := time.Now()
+		var (
+			realtimeDevices    []string
+			realtimeRows       []map[string]string
+			lastDeviceReloadAt time.Time
+			lastRealtimeAt     time.Time
+		)
 
 		for range ticker.C {
-			hs.replayVitalsCache(startPlayback)
+			now := time.Now()
+
+			if realtimeDevices == nil || now.Sub(lastDeviceReloadAt) >= 30*time.Second {
+				allConfigured := hs.loadConfiguredDeviceIDs()
+				realtimeDevices = excludeDevices(allConfigured, fixedReplayDevices)
+				lastDeviceReloadAt = now
+			}
+
+			if now.Sub(lastRealtimeAt) >= 2*time.Second {
+				rows, err := hs.fetchRealtimeVitals(realtimeDevices)
+				if err != nil {
+					hs.log.Error("Failed to refresh realtime vitals data", "error", err, "deviceCount", len(realtimeDevices))
+				} else {
+					realtimeRows = rows
+				}
+				lastRealtimeAt = now
+			}
+
+			fixedRows := hs.replayFixedVitals(startPlayback)
+			merged := make([]map[string]string, 0, len(fixedRows)+len(realtimeRows))
+			merged = append(merged, fixedRows...)
+			merged = append(merged, realtimeRows...)
+
+			vitalsCacheMutex.Lock()
+			vitalsCache = CachedVitalsData{
+				Results:   merged,
+				Timestamp: now.UnixMilli(),
+			}
+			vitalsCacheMutex.Unlock()
 		}
 	}()
 }
 
 // loadFixedPeriodData 一次性从 InfluxDB 拉取固定 5 分钟的数据
-func (hs *HTTPServer) loadFixedPeriodData() {
-	devices := hs.loadConfiguredDeviceIDs()
+func (hs *HTTPServer) loadFixedPeriodData(devices []string) {
 	if len(devices) == 0 {
-		hs.log.Warn("No devices found for fixed period query")
+		hs.log.Warn("No devices found for fixed period replay")
 		return
 	}
 
-	deviceFilter := strings.Join(
-		func() []string {
-			var filters []string
-			for _, d := range devices {
-				filters = append(filters, fmt.Sprintf(`r["device_id"] == "%s"`, d))
-			}
-			return filters
-		}(),
-		" or ",
-	)
+	deviceFilter := buildDeviceFilterExpr(devices)
 
 	fluxQuery := fmt.Sprintf(`from(bucket: "%s")
   |> range(start: %s, stop: %s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
-	|> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
+	|> filter(fn: (r) => %s)
   |> filter(fn: (r) => %s)`,
 		defaultBucket,
 		fixedStart.Format(time.RFC3339),
 		fixedEnd.Format(time.RFC3339),
+		vitalsFieldFilter,
 		deviceFilter,
 	)
 
@@ -244,6 +328,25 @@ func (hs *HTTPServer) loadFixedPeriodData() {
 	}
 
 	hs.log.Error("Failed to load fixed period data after all retries")
+}
+
+func (hs *HTTPServer) fetchRealtimeVitals(devices []string) ([]map[string]string, error) {
+	if len(devices) == 0 {
+		return nil, nil
+	}
+
+	deviceFilter := buildDeviceFilterExpr(devices)
+	fluxQuery := fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: -8s)
+  |> filter(fn: (r) => r["_measurement"] == "device_data")
+  |> filter(fn: (r) => %s)
+  |> filter(fn: (r) => %s)`,
+		defaultBucket,
+		vitalsFieldFilter,
+		deviceFilter,
+	)
+
+	return hs.executeInfluxQuery(fluxQuery)
 }
 
 type deviceMACRow struct {
@@ -296,12 +399,12 @@ func (hs *HTTPServer) loadConfiguredDeviceIDs() []string {
 	return devices
 }
 
-// replayVitalsCache 根据当前墙钟时间计算在 5 分钟窗口内的偏移，取出对应秒的数据写入缓存
-func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
+// replayFixedVitals 根据当前墙钟时间计算在固定窗口内的偏移，返回对应秒的数据
+func (hs *HTTPServer) replayFixedVitals(startPlayback time.Time) []map[string]string {
 	fixedPeriodDataMutex.RLock()
 	if !fixedPeriodLoaded || len(fixedPeriodData) == 0 {
 		fixedPeriodDataMutex.RUnlock()
-		return
+		return nil
 	}
 	allData := fixedPeriodData
 	fixedPeriodDataMutex.RUnlock()
@@ -338,17 +441,12 @@ func (hs *HTTPServer) replayVitalsCache(startPlayback time.Time) {
 		matched = findClosestRecords(allData, virtualNow)
 	}
 
-	vitalsCacheMutex.Lock()
-	vitalsCache = CachedVitalsData{
-		Results:   matched,
-		Timestamp: time.Now().UnixMilli(),
-	}
-	vitalsCacheMutex.Unlock()
-
 	hs.log.Debug("Vitals cache replayed",
 		"virtualTime", virtualNow.Format(time.RFC3339),
 		"matchedRecords", len(matched),
 		"offset", offset.String())
+
+	return matched
 }
 
 // findClosestRecords 当窗口内无数据时，找到离 virtualNow 最近的每个 device+field 的记录
