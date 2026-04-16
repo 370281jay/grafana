@@ -189,8 +189,9 @@ const formatRoomLabel = (room: string) => (room.startsWith('房间') ? room : `$
 const normalizeDeviceMac = (value: string) => value.trim().replaceAll(':', '').replaceAll('-', '').toUpperCase();
 const dropdownStyle: CSSProperties = {
   width: '100%',
-  minHeight: '36px',
-  padding: '8px 10px',
+  height: '36px',
+  boxSizing: 'border-box',
+  padding: '0 10px',
   borderRadius: '4px',
   border: '1px solid rgba(0, 0, 0, 0.2)',
   backgroundColor: '#fff',
@@ -198,6 +199,19 @@ const dropdownStyle: CSSProperties = {
   fontSize: '13px',
   lineHeight: '1.35',
   appearance: 'none',
+};
+
+const textInputStyle: CSSProperties = {
+  width: '100%',
+  height: '36px',
+  boxSizing: 'border-box',
+  padding: '0 10px',
+  borderRadius: '4px',
+  border: '1px solid rgba(0, 0, 0, 0.2)',
+  backgroundColor: '#fff',
+  color: 'rgba(0, 0, 0, 0.85)',
+  fontSize: '13px',
+  lineHeight: '1.35',
 };
 // 首页卡片配置来自后端（按当前用户组织隔离），默认不使用固定设备回退。
 const MONITORED_DEVICES: DeviceConfig[] = [];
@@ -208,6 +222,9 @@ const INFLUXDB_CONFIG = {
   org: 'ld6002h',
   bucket: 'vitals_data',
 };
+
+const VITALS_FIELD_FILTER_EXPR =
+  'r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid"';
 
 const buildDeviceFilter = (devices: DeviceConfig[]): string => {
   if (!devices.length) {
@@ -249,7 +266,23 @@ const buildFluxQuery = (bucket: string, devices: DeviceConfig[]): string => {
   return `from(bucket: "${bucket}")
   |> range(start: -3s)
   |> filter(fn: (r) => r["_measurement"] == "device_data")
-  |> filter(fn: (r) => r["_field"] == "distance_min_cm" or r["_field"] == "heart_rate_bpm" or r["_field"] == "heart_rate" or r["_field"] == "movement_amplitude" or r["_field"] == "respiration_bpm" or r["_field"] == "fall" or r["_field"] == "fall_count" or r["_field"] == "human" or r["_field"] == "spo2" or r["_field"] == "heart_rate_valid" or r["_field"] == "spo2_valid")
+  |> filter(fn: (r) => ${VITALS_FIELD_FILTER_EXPR})
+  |> filter(fn: (r) => ${deviceFilter})`;
+};
+
+const buildDeviceOnlineCheckQuery = (bucket: string, deviceMacs: string[]): string => {
+  const deviceFilter = buildDeviceFilter(
+    deviceMacs.map((deviceMac) => ({
+      room: '',
+      deviceId: null,
+      deviceMac,
+    }))
+  );
+
+  return `from(bucket: "${bucket}")
+  |> range(start: -15s)
+  |> filter(fn: (r) => r["_measurement"] == "device_data")
+  |> filter(fn: (r) => ${VITALS_FIELD_FILTER_EXPR})
   |> filter(fn: (r) => ${deviceFilter})`;
 };
 
@@ -398,6 +431,9 @@ export function HomePage() {
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [deviceEntities, setDeviceEntities] = useState<DeviceEntity[]>([]);
+  const [onlineDeviceMacSet, setOnlineDeviceMacSet] = useState<Set<string>>(new Set());
+  const [isCheckingDeviceOnline, setIsCheckingDeviceOnline] = useState(false);
+  const [deviceOnlineCheckedAt, setDeviceOnlineCheckedAt] = useState<number | null>(null);
   const [isDeviceManagerOpen, setDeviceManagerOpen] = useState(false);
   const [deviceFormValues, setDeviceFormValues] = useState<DeviceFormValues>({
     name: '',
@@ -453,6 +489,13 @@ export function HomePage() {
     });
     return map;
   }, [dashboardByUid, deviceConfigs]);
+
+  const onlineDeviceCount = useMemo(() => {
+    return deviceEntities.reduce((count: number, device: DeviceEntity) => {
+      const normalizedMac = normalizeDeviceMac(device.deviceMac);
+      return count + (onlineDeviceMacSet.has(normalizedMac) ? 1 : 0);
+    }, 0);
+  }, [deviceEntities, onlineDeviceMacSet]);
 
   const sortedDeviceVitals = useMemo(() => {
     return [...deviceVitals].sort((a, b) => Number(b.fallRisk) - Number(a.fallRisk));
@@ -918,13 +961,59 @@ export function HomePage() {
 
   const openSettingsModal = () => {
     if (!deviceEntities.length) {
-      fetchDevices();
+      void fetchDevices();
     }
     setSettingsDraft(deviceConfigs.map((config: DeviceConfig) => ({ ...config })));
     setSettingsError(null);
     setSettingsNotice(null);
     setSettingsModalOpen(true);
   };
+
+  const checkDeviceOnlineStatus = useCallback(async () => {
+    const deviceMacs = Array.from(
+      new Set(
+        deviceEntities
+          .map((device: DeviceEntity) => normalizeDeviceMac(device.deviceMac))
+          .filter((deviceMac: string) => Boolean(deviceMac))
+      )
+    );
+
+    if (deviceMacs.length === 0) {
+      setOnlineDeviceMacSet(new Set());
+      setDeviceOnlineCheckedAt(Date.now());
+      return;
+    }
+
+    setIsCheckingDeviceOnline(true);
+    try {
+      const query = buildDeviceOnlineCheckQuery(INFLUXDB_CONFIG.bucket, deviceMacs);
+      const response = await getBackendSrv().post('/api/influxdb/query', { query });
+      const rows: InfluxRow[] = Array.isArray(response?.results) ? response.results : [];
+      const onlineSet = new Set<string>();
+
+      rows.forEach((row: InfluxRow) => {
+        const deviceMac = normalizeDeviceMac(String(row?.device_id ?? ''));
+        if (deviceMac) {
+          onlineSet.add(deviceMac);
+        }
+      });
+
+      setOnlineDeviceMacSet(onlineSet);
+    } catch (err) {
+      console.error('Failed to check device online status:', err);
+      setOnlineDeviceMacSet(new Set());
+    } finally {
+      setIsCheckingDeviceOnline(false);
+      setDeviceOnlineCheckedAt(Date.now());
+    }
+  }, [deviceEntities]);
+
+  useEffect(() => {
+    if (!isSettingsModalOpen) {
+      return;
+    }
+    void checkDeviceOnlineStatus();
+  }, [isSettingsModalOpen, checkDeviceOnlineStatus]);
 
   const addSettingsRow = () => {
     setSettingsDraft((prev: DeviceConfig[]) => [
@@ -1322,6 +1411,28 @@ export function HomePage() {
           height: 100%;
         }
 
+        .hp-settings-card {
+          border: 1px solid rgba(0, 0, 0, 0.1);
+          border-radius: 6px;
+          padding: 16px;
+          background-color: rgba(0, 0, 0, 0.015);
+        }
+
+        .hp-settings-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          align-items: end;
+        }
+
+        .hp-settings-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          font-size: 13px;
+          min-width: 0;
+        }
+
         /* ---------- 手机竖屏 (≤ 576px) ---------- */
         @media (max-width: 576px) {
           .hp-card,
@@ -1381,6 +1492,13 @@ export function HomePage() {
           .hp-modal-content h2 {
             font-size: 18px !important;
           }
+          .hp-settings-card {
+            padding: 12px !important;
+          }
+          .hp-settings-grid {
+            grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+            gap: 10px !important;
+          }
         }
 
         /* ---------- 手机横屏 / 小平板 (577px – 768px) ---------- */
@@ -1398,6 +1516,9 @@ export function HomePage() {
           .hp-metric-value {
             font-size: 26px !important;
           }
+          .hp-settings-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
         }
 
         /* ---------- 平板 (769px – 1024px) ---------- */
@@ -1410,6 +1531,9 @@ export function HomePage() {
             font-size: 36px !important;
           }
           .hp-card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+          .hp-settings-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
           }
         }
@@ -1459,7 +1583,7 @@ export function HomePage() {
                 className="hp-title"
                 style={{ fontSize: '48px', marginBottom: '16px', textAlign: 'center' }}
               >
-                欢迎来到华康数据可视化平台
+                欢迎来到数据可视化平台
               </h1>
 
               {/* 错误提示 */}
@@ -1866,6 +1990,24 @@ export function HomePage() {
                   </div>
                 )}
 
+                <div
+                  style={{
+                    padding: '8px 10px',
+                    marginBottom: '12px',
+                    borderRadius: '4px',
+                    backgroundColor: 'rgba(0, 102, 204, 0.06)',
+                    border: '1px solid rgba(0, 102, 204, 0.18)',
+                    color: 'rgba(0, 0, 0, 0.7)',
+                    fontSize: '12px',
+                  }}
+                >
+                  {isCheckingDeviceOnline
+                    ? '正在检测设备在线状态...'
+                    : `在线设备 ${onlineDeviceCount}/${deviceEntities.length}${
+                        deviceOnlineCheckedAt ? `，检测时间 ${new Date(deviceOnlineCheckedAt).toLocaleTimeString()}` : ''
+                      }`}
+                </div>
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {settingsDraft.map((item, index) => {
                     const deviceSelectValue = item.deviceId != null ? String(item.deviceId) : '';
@@ -1876,33 +2018,21 @@ export function HomePage() {
 
                     return (
                       <div
+                        className="hp-settings-card"
                         key={item.id != null ? `card-${item.id}` : `draft-${index}`}
-                        style={{
-                          border: '1px solid rgba(0, 0, 0, 0.1)',
-                          borderRadius: '6px',
-                          padding: '16px',
-                          backgroundColor: 'rgba(0, 0, 0, 0.015)',
-                        }}
                       >
-                        <div
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                            gap: '12px',
-                            alignItems: 'end',
-                          }}
-                        >
-                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                        <div className="hp-settings-grid">
+                          <label className="hp-settings-field">
                             <span>房间名称</span>
                             <input
                               value={item.room}
                               onChange={(event) => updateSettingsRow(index, { room: event.target.value })}
                               placeholder="例如：房间 1"
-                              style={{ padding: '8px 10px', borderRadius: '4px', border: '1px solid rgba(0, 0, 0, 0.2)' }}
+                              style={textInputStyle}
                             />
                           </label>
 
-                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <label className="hp-settings-field">
                             <span>绑定设备</span>
                             <select
                               value={deviceSelectValue}
@@ -1918,16 +2048,13 @@ export function HomePage() {
                               )}
                               {deviceEntities.map((device) => (
                                 <option key={device.id} value={String(device.id)}>
-                                  {device.name} ({device.deviceMac})
+                                  {device.name} ({device.deviceMac}) {onlineDeviceMacSet.has(normalizeDeviceMac(device.deviceMac)) ? '🟢 在线' : '⚪ 离线'}
                                 </option>
                               ))}
                             </select>
-                            {/* <span style={{ fontSize: '12px', color: 'rgba(0,0,0,0.45)' }}>
-                              当前 MAC：{item.deviceMac || '未选择'}
-                            </span> */}
                           </label>
 
-                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <label className="hp-settings-field">
                             <span>设备类型</span>
                             <select
                               value={item.deviceType ?? DEFAULT_DEVICE_TYPE}
@@ -1942,7 +2069,7 @@ export function HomePage() {
                             </select>
                           </label>
 
-                          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                          <label className="hp-settings-field">
                             <span>仪表板</span>
                             <select
                               value={dashboardSelectValue}
